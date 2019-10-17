@@ -13,6 +13,8 @@ https://github.com/jvm-profiling-tools/perf-map-agent.git
 4. Get the pid of the process to be profiled
 5. Run. Example: FLAMEGRAPH\_DIR=/tmp/FlameGraph/ ./perf-java-flames  17407
 
+![FlameGraph Example](./flame_graphs/pictures/flamegraph-scroll.12ks.svg)
+
 # FlightRecording
 Flight recorder is specific for Java application from Oracle.
 https://docs.oracle.com/javacomponents/jmc-5-4/jfr-runtime-guide/about.htm#JFRUH170
