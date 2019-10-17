@@ -13,7 +13,7 @@ https://github.com/lschuetze/scroll-java-scala-interop
 
 I used this example to extent to the routing-mock (code/scroll/router\_as\_player\_mock/pom.xml)
 
-![Routing Mock](../../../code/scroll/router_as_player_mock/ClassDiagram.svg)
+![Routing Mock](../../../code/scroll/router_as_player_mock/ClassDiagramInTheOne.svg)
 
 
 ### Passing parameters to the JVM
