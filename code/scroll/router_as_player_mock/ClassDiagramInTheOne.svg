@@ -173,10 +173,7 @@
         <tspan x="1120" y="220"></tspan>
       </text>
     </g>
-    <g>
-      <polyline style="fill: none; stroke-opacity: 1; stroke-width: 2; stroke: #000000" points="594.8,314 720,314 720,380 720,380 720,434 699.472,434 "/>
-      <polyline style="fill: none; stroke-opacity: 1; stroke-width: 2; stroke: #000000" points="701.236,432 697.236,434 701.236,436 "/>
-    </g>
+    <polyline style="fill: none; stroke-opacity: 1; stroke-width: 2; stroke: #000000" points="594.8,314 720,314 720,380 720,380 720,434 695,434 "/>
     <g>
       <polyline style="fill: none; stroke-opacity: 1; stroke-width: 2; stroke: #000000" points="619.972,314 660,314 660,314 "/>
       <polygon style="fill: #000000; fill-opacity: 1; stroke-opacity: 1; stroke-width: 2; stroke: #000000" fill-rule="evenodd" points="594.8,314 608.8,309.2 622.8,314 608.8,318.8 "/>
