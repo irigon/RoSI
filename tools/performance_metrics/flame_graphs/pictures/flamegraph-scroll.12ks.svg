@@ -1,0 +1,3545 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="502" onload="init(evt)" viewBox="0 0 1200 502" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="502.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="485" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="485" > </text>
+<g id="frames">
+<g >
+<title>apic_timer_interrupt (1 samples, 0.06%)</title><rect x="638.8" y="405" width="0.7" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text  x="641.80" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="187.3" y="229" width="0.6" height="15.0" fill="rgb(203,55,55)" rx="2" ry="2" />
+<text  x="190.27" y="239.5" ></text>
+</g>
+<g >
+<title>pthread_cond_timedwait@@GLIBC_2.3.2 (8 samples, 0.45%)</title><rect x="262.9" y="421" width="5.3" height="15.0" fill="rgb(202,54,54)" rx="2" ry="2" />
+<text  x="265.86" y="431.5" ></text>
+</g>
+<g >
+<title>Linterfaces/ConnectivityGrid:::getNearInterfaces (5 samples, 0.28%)</title><rect x="1080.3" y="405" width="3.3" height="15.0" fill="rgb(198,198,58)" rx="2" ry="2" />
+<text  x="1083.29" y="415.5" ></text>
+</g>
+<g >
+<title>schedule (17 samples, 0.96%)</title><rect x="206.7" y="293" width="11.3" height="15.0" fill="rgb(207,61,61)" rx="2" ry="2" />
+<text  x="209.67" y="303.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (16 samples, 0.91%)</title><rect x="103.0" y="389" width="10.7" height="15.0" fill="rgb(230,93,93)" rx="2" ry="2" />
+<text  x="105.98" y="399.5" ></text>
+</g>
+<g >
+<title>futex_wait (18 samples, 1.02%)</title><rect x="139.1" y="325" width="12.0" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text  x="142.10" y="335.5" ></text>
+</g>
+<g >
+<title>Interpreter (4 samples, 0.23%)</title><rect x="84.9" y="213" width="2.7" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text  x="87.92" y="223.5" ></text>
+</g>
+<g >
+<title>native_write_msr (4 samples, 0.23%)</title><rect x="403.3" y="229" width="2.7" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text  x="406.33" y="239.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="228.1" y="341" width="1.3" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="231.07" y="351.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (16 samples, 0.91%)</title><rect x="103.0" y="405" width="10.7" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="105.98" y="415.5" ></text>
+</g>
+<g >
+<title>nmi_cpu_backtrace (1 samples, 0.06%)</title><rect x="181.9" y="181" width="0.7" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="184.92" y="191.5" ></text>
+</g>
+<g >
+<title>Sweeper_thread (14 samples, 0.79%)</title><rect x="220.0" y="437" width="9.4" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="223.05" y="447.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="21.4" y="357" width="0.6" height="15.0" fill="rgb(226,89,89)" rx="2" ry="2" />
+<text  x="24.37" y="367.5" ></text>
+</g>
+<g >
+<title>schedule (12 samples, 0.68%)</title><rect x="72.9" y="293" width="8.0" height="15.0" fill="rgb(214,71,71)" rx="2" ry="2" />
+<text  x="75.88" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="167.9" y="309" width="3.3" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="170.87" y="319.5" ></text>
+</g>
+<g >
+<title>decay_load (1 samples, 0.06%)</title><rect x="402.7" y="229" width="0.6" height="15.0" fill="rgb(210,65,65)" rx="2" ry="2" />
+<text  x="405.66" y="239.5" ></text>
+</g>
+<g >
+<title>sys_futex (16 samples, 0.91%)</title><rect x="188.6" y="357" width="10.7" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text  x="191.61" y="367.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (4 samples, 0.23%)</title><rect x="84.9" y="53" width="2.7" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="87.92" y="63.5" ></text>
+</g>
+<g >
+<title>AWT-EventQueue- (119 samples, 6.75%)</title><rect x="10.0" y="437" width="79.6" height="15.0" fill="rgb(248,120,120)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >AWT-Event..</text>
+</g>
+<g >
+<title>finish_task_switch (7 samples, 0.40%)</title><rect x="1184.0" y="261" width="4.7" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="1186.98" y="271.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (7 samples, 0.40%)</title><rect x="151.1" y="373" width="4.7" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="154.15" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="84.9" y="373" width="3.4" height="15.0" fill="rgb(242,112,112)" rx="2" ry="2" />
+<text  x="87.92" y="383.5" ></text>
+</g>
+<g >
+<title>Lsun/java2d/SunGraphics2D:::fillRect (1 samples, 0.06%)</title><rect x="32.1" y="421" width="0.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text  x="35.07" y="431.5" ></text>
+</g>
+<g >
+<title>schedule (16 samples, 0.91%)</title><rect x="229.4" y="309" width="10.7" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text  x="232.41" y="319.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (1 samples, 0.06%)</title><rect x="90.3" y="373" width="0.6" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="93.27" y="383.5" ></text>
+</g>
+<g >
+<title>oop_disjoint_arraycopy (3 samples, 0.17%)</title><rect x="525.7" y="405" width="2.1" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="528.75" y="415.5" ></text>
+</g>
+<g >
+<title>C1_CompilerThre (18 samples, 1.02%)</title><rect x="103.0" y="437" width="12.0" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="105.98" y="447.5" ></text>
+</g>
+<g >
+<title>update_blocked_averages (1 samples, 0.06%)</title><rect x="638.8" y="309" width="0.7" height="15.0" fill="rgb(200,51,51)" rx="2" ry="2" />
+<text  x="641.80" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/awt/Container:::addImpl (1 samples, 0.06%)</title><rect x="20.0" y="421" width="0.7" height="15.0" fill="rgb(75,223,75)" rx="2" ry="2" />
+<text  x="23.03" y="431.5" ></text>
+</g>
+<g >
+<title>__schedule (16 samples, 0.91%)</title><rect x="171.9" y="277" width="10.7" height="15.0" fill="rgb(224,84,84)" rx="2" ry="2" />
+<text  x="174.88" y="287.5" ></text>
+</g>
+<g >
+<title>prepare_exit_to_usermode (2 samples, 0.11%)</title><rect x="1078.3" y="373" width="1.3" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="1081.29" y="383.5" ></text>
+</g>
+<g >
+<title>native_sched_clock (1 samples, 0.06%)</title><rect x="1184.6" y="181" width="0.7" height="15.0" fill="rgb(203,54,54)" rx="2" ry="2" />
+<text  x="1187.65" y="191.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (7 samples, 0.40%)</title><rect x="167.2" y="389" width="4.7" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="170.20" y="399.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="152.5" y="245" width="3.3" height="15.0" fill="rgb(215,73,73)" rx="2" ry="2" />
+<text  x="155.48" y="255.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="21.4" y="373" width="0.6" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text  x="24.37" y="383.5" ></text>
+</g>
+<g >
+<title>[unknown] (16 samples, 0.91%)</title><rect x="171.9" y="421" width="10.7" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="174.88" y="431.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (16 samples, 0.91%)</title><rect x="171.9" y="229" width="10.7" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="174.88" y="239.5" ></text>
+</g>
+<g >
+<title>native_apic_msr_write (1 samples, 0.06%)</title><rect x="90.9" y="181" width="0.7" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="93.94" y="191.5" ></text>
+</g>
+<g >
+<title>Ljava/awt/AWTEvent:::&lt;init&gt; (3 samples, 0.17%)</title><rect x="1084.3" y="405" width="2.0" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="1087.31" y="415.5" ></text>
+</g>
+<g >
+<title>__schedule (17 samples, 0.96%)</title><rect x="244.1" y="293" width="11.4" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="247.13" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/awt/geom/Path2D$Float:::append (1 samples, 0.06%)</title><rect x="22.7" y="421" width="0.7" height="15.0" fill="rgb(100,246,100)" rx="2" ry="2" />
+<text  x="25.71" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="21.4" y="341" width="0.6" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text  x="24.37" y="351.5" ></text>
+</g>
+<g >
+<title>handle_irq (1 samples, 0.06%)</title><rect x="527.8" y="373" width="0.6" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="530.76" y="383.5" ></text>
+</g>
+<g >
+<title>swapgs_restore_regs_and_return_to_usermode (1 samples, 0.06%)</title><rect x="446.8" y="405" width="0.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="449.81" y="415.5" ></text>
+</g>
+<g >
+<title>Lsun/font/SunFontManager:::findFont2D (2 samples, 0.11%)</title><rect x="30.7" y="421" width="1.4" height="15.0" fill="rgb(71,219,71)" rx="2" ry="2" />
+<text  x="33.74" y="431.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (16 samples, 0.91%)</title><rect x="188.6" y="213" width="10.7" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="191.61" y="223.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (4 samples, 0.23%)</title><rect x="84.9" y="101" width="2.7" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text  x="87.92" y="111.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="213" width="2.0" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="1166.24" y="223.5" ></text>
+</g>
+<g >
+<title>Interpreter (4 samples, 0.23%)</title><rect x="84.9" y="229" width="2.7" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text  x="87.92" y="239.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (8 samples, 0.45%)</title><rect x="262.9" y="325" width="5.3" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text  x="265.86" y="335.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (12 samples, 0.68%)</title><rect x="220.0" y="229" width="8.1" height="15.0" fill="rgb(254,128,128)" rx="2" ry="2" />
+<text  x="223.05" y="239.5" ></text>
+</g>
+<g >
+<title>start_thread (2 samples, 0.11%)</title><rect x="228.1" y="421" width="1.3" height="15.0" fill="rgb(228,92,92)" rx="2" ry="2" />
+<text  x="231.07" y="431.5" ></text>
+</g>
+<g >
+<title>Ljava/util/Collections$UnmodifiableCollection$1:::hasNext (4 samples, 0.23%)</title><rect x="529.1" y="421" width="2.7" height="15.0" fill="rgb(84,231,84)" rx="2" ry="2" />
+<text  x="532.09" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="152.5" y="261" width="3.3" height="15.0" fill="rgb(235,102,102)" rx="2" ry="2" />
+<text  x="155.48" y="271.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (16 samples, 0.91%)</title><rect x="229.4" y="261" width="10.7" height="15.0" fill="rgb(203,55,55)" rx="2" ry="2" />
+<text  x="232.41" y="271.5" ></text>
+</g>
+<g >
+<title>Lsun/java2d/SunGraphics2D:::intersectShapes (1 samples, 0.06%)</title><rect x="24.7" y="405" width="0.7" height="15.0" fill="rgb(95,242,95)" rx="2" ry="2" />
+<text  x="27.72" y="415.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (8 samples, 0.45%)</title><rect x="256.8" y="389" width="5.4" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="259.84" y="399.5" ></text>
+</g>
+<g >
+<title>VM_Periodic_Tas (20 samples, 1.13%)</title><rect x="242.8" y="437" width="13.4" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="245.79" y="447.5" ></text>
+</g>
+<g >
+<title>Lsun/java2d/xr/XRRenderer:::drawLine (36 samples, 2.04%)</title><rect x="46.8" y="405" width="24.1" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="49.79" y="415.5" >L..</text>
+</g>
+<g >
+<title>finish_task_switch (4 samples, 0.23%)</title><rect x="84.9" y="117" width="2.7" height="15.0" fill="rgb(222,83,83)" rx="2" ry="2" />
+<text  x="87.92" y="127.5" ></text>
+</g>
+<g >
+<title>Lscala/collection/Iterator:::foreach (4 samples, 0.23%)</title><rect x="680.3" y="421" width="2.6" height="15.0" fill="rgb(205,205,61)" rx="2" ry="2" />
+<text  x="683.27" y="431.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (13 samples, 0.74%)</title><rect x="115.7" y="405" width="8.7" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="118.69" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="1163.2" y="181" width="1.4" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="1166.24" y="191.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="205.3" y="229" width="0.7" height="15.0" fill="rgb(225,86,86)" rx="2" ry="2" />
+<text  x="208.33" y="239.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="255.5" y="341" width="0.7" height="15.0" fill="rgb(228,90,90)" rx="2" ry="2" />
+<text  x="258.50" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="268.2" y="405" width="1.3" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="271.21" y="415.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (16 samples, 0.91%)</title><rect x="103.0" y="261" width="10.7" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="105.98" y="271.5" ></text>
+</g>
+<g >
+<title>start_thread (4 samples, 0.23%)</title><rect x="136.4" y="421" width="2.7" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="139.43" y="431.5" ></text>
+</g>
+<g >
+<title>__update_load_avg_se.isra.37 (1 samples, 0.06%)</title><rect x="402.7" y="245" width="0.6" height="15.0" fill="rgb(239,106,106)" rx="2" ry="2" />
+<text  x="405.66" y="255.5" ></text>
+</g>
+<g >
+<title>sys_futex (16 samples, 0.91%)</title><rect x="125.7" y="373" width="10.7" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text  x="128.73" y="383.5" ></text>
+</g>
+<g >
+<title>sys_openat (1 samples, 0.06%)</title><rect x="256.2" y="357" width="0.6" height="15.0" fill="rgb(220,80,80)" rx="2" ry="2" />
+<text  x="259.17" y="367.5" ></text>
+</g>
+<g >
+<title>Reference_Handl (20 samples, 1.13%)</title><rect x="206.7" y="437" width="13.3" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text  x="209.67" y="447.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (12 samples, 0.68%)</title><rect x="72.9" y="261" width="8.0" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="75.88" y="271.5" ></text>
+</g>
+<g >
+<title>pthread_cond_timedwait@@GLIBC_2.3.2 (19 samples, 1.08%)</title><rect x="242.8" y="421" width="12.7" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="245.79" y="431.5" ></text>
+</g>
+<g >
+<title>poll_schedule_timeout (16 samples, 0.91%)</title><rect x="90.9" y="341" width="10.7" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="93.94" y="351.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (8 samples, 0.45%)</title><rect x="256.8" y="309" width="5.4" height="15.0" fill="rgb(216,74,74)" rx="2" ry="2" />
+<text  x="259.84" y="319.5" ></text>
+</g>
+<g >
+<title>ksize (1 samples, 0.06%)</title><rect x="90.3" y="165" width="0.6" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text  x="93.27" y="175.5" ></text>
+</g>
+<g >
+<title>Lsun/awt/SunToolkit:::isInstanceOf (4 samples, 0.23%)</title><rect x="27.4" y="421" width="2.7" height="15.0" fill="rgb(97,243,97)" rx="2" ry="2" />
+<text  x="30.39" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="268.2" y="373" width="1.3" height="15.0" fill="rgb(231,96,96)" rx="2" ry="2" />
+<text  x="271.21" y="383.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (16 samples, 0.91%)</title><rect x="90.9" y="213" width="10.7" height="15.0" fill="rgb(208,63,63)" rx="2" ry="2" />
+<text  x="93.94" y="223.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="124.4" y="341" width="1.3" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text  x="127.39" y="351.5" ></text>
+</g>
+<g >
+<title>prepare_exit_to_usermode (4 samples, 0.23%)</title><rect x="84.9" y="181" width="2.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="87.92" y="191.5" ></text>
+</g>
+<g >
+<title>pthread_cond_timedwait@@GLIBC_2.3.2 (1 samples, 0.06%)</title><rect x="255.5" y="309" width="0.7" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="258.50" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="101.6" y="373" width="1.4" height="15.0" fill="rgb(246,118,118)" rx="2" ry="2" />
+<text  x="104.64" y="383.5" ></text>
+</g>
+<g >
+<title>start_thread (4 samples, 0.23%)</title><rect x="240.1" y="421" width="2.7" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="243.11" y="431.5" ></text>
+</g>
+<g >
+<title>do_futex (12 samples, 0.68%)</title><rect x="72.9" y="341" width="8.0" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="75.88" y="351.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (16 samples, 0.91%)</title><rect x="188.6" y="389" width="10.7" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="191.61" y="399.5" ></text>
+</g>
+<g >
+<title>Ljava/awt/EventDispatchThread:::pumpEventsForFilter (1 samples, 0.06%)</title><rect x="87.6" y="229" width="0.7" height="15.0" fill="rgb(80,227,80)" rx="2" ry="2" />
+<text  x="90.60" y="239.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (12 samples, 0.68%)</title><rect x="72.9" y="197" width="8.0" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text  x="75.88" y="207.5" ></text>
+</g>
+<g >
+<title>Ljava/util/regex/Pattern$GroupHead:::match (1 samples, 0.06%)</title><rect x="42.8" y="405" width="0.6" height="15.0" fill="rgb(56,205,56)" rx="2" ry="2" />
+<text  x="45.78" y="415.5" ></text>
+</g>
+<g >
+<title>__vdso_clock_gettime (1 samples, 0.06%)</title><rect x="1176.6" y="389" width="0.7" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text  x="1179.62" y="399.5" ></text>
+</g>
+<g >
+<title>start_thread (1 samples, 0.06%)</title><rect x="255.5" y="421" width="0.7" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text  x="258.50" y="431.5" ></text>
+</g>
+<g >
+<title>update_blocked_averages (1 samples, 0.06%)</title><rect x="446.1" y="309" width="0.7" height="15.0" fill="rgb(231,96,96)" rx="2" ry="2" />
+<text  x="449.15" y="319.5" ></text>
+</g>
+<g >
+<title>native_write_msr (15 samples, 0.85%)</title><rect x="230.1" y="197" width="10.0" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text  x="233.08" y="207.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/graph/Graphs:::hasCycle (1 samples, 0.06%)</title><rect x="447.5" y="421" width="0.7" height="15.0" fill="rgb(84,231,84)" rx="2" ry="2" />
+<text  x="450.48" y="431.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (16 samples, 0.91%)</title><rect x="171.9" y="245" width="10.7" height="15.0" fill="rgb(215,71,71)" rx="2" ry="2" />
+<text  x="174.88" y="255.5" ></text>
+</g>
+<g >
+<title>intel_bts_enable_local (1 samples, 0.06%)</title><rect x="126.4" y="197" width="0.7" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="129.39" y="207.5" ></text>
+</g>
+<g >
+<title>update_load_avg (1 samples, 0.06%)</title><rect x="402.7" y="261" width="0.6" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="405.66" y="271.5" ></text>
+</g>
+<g >
+<title>Lsun/font/SunFontManager:::findFont2D (1 samples, 0.06%)</title><rect x="46.1" y="405" width="0.7" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text  x="49.12" y="415.5" ></text>
+</g>
+<g >
+<title>Lgui/playfield/MapGraphic:::draw (14 samples, 0.79%)</title><rect x="10.7" y="421" width="9.3" height="15.0" fill="rgb(228,228,69)" rx="2" ry="2" />
+<text  x="13.67" y="431.5" ></text>
+</g>
+<g >
+<title>GC_Thread#1 (24 samples, 1.36%)</title><rect x="155.8" y="437" width="16.1" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="158.83" y="447.5" ></text>
+</g>
+<g >
+<title>Ljava/security/AccessController:::getStackAccessControlContext (1 samples, 0.06%)</title><rect x="21.4" y="405" width="0.6" height="15.0" fill="rgb(59,208,59)" rx="2" ry="2" />
+<text  x="24.37" y="415.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (8 samples, 0.45%)</title><rect x="256.8" y="197" width="5.4" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="259.84" y="207.5" ></text>
+</g>
+<g >
+<title>do_futex (17 samples, 0.96%)</title><rect x="206.7" y="341" width="11.3" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="209.67" y="351.5" ></text>
+</g>
+<g >
+<title>native_write_msr (4 samples, 0.23%)</title><rect x="1173.3" y="213" width="2.7" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text  x="1176.28" y="223.5" ></text>
+</g>
+<g >
+<title>native_write_msr (11 samples, 0.62%)</title><rect x="116.4" y="197" width="7.3" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="119.36" y="207.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (16 samples, 0.91%)</title><rect x="125.7" y="261" width="10.7" height="15.0" fill="rgb(239,108,108)" rx="2" ry="2" />
+<text  x="128.73" y="271.5" ></text>
+</g>
+<g >
+<title>Lsun/java2d/xr/XRDrawLine:::clipCoordinates (3 samples, 0.17%)</title><rect x="32.7" y="421" width="2.1" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text  x="35.74" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1180.6" y="229" width="2.0" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text  x="1183.63" y="239.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="218.0" y="373" width="2.0" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text  x="221.04" y="383.5" ></text>
+</g>
+<g >
+<title>Ljava/util/ArrayDeque:::addLast (24 samples, 1.36%)</title><rect x="512.4" y="421" width="16.0" height="15.0" fill="rgb(62,211,62)" rx="2" ry="2" />
+<text  x="515.37" y="431.5" ></text>
+</g>
+<g >
+<title>do_futex (18 samples, 1.02%)</title><rect x="139.1" y="341" width="12.0" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="142.10" y="351.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (4 samples, 0.23%)</title><rect x="1173.3" y="245" width="2.7" height="15.0" fill="rgb(205,57,57)" rx="2" ry="2" />
+<text  x="1176.28" y="255.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="240.1" y="325" width="2.7" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="243.11" y="335.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (8 samples, 0.45%)</title><rect x="262.9" y="277" width="5.3" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="265.86" y="287.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (1 samples, 0.06%)</title><rect x="638.8" y="357" width="0.7" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="641.80" y="367.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="124.4" y="373" width="1.3" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="127.39" y="383.5" ></text>
+</g>
+<g >
+<title>futex_wait (8 samples, 0.45%)</title><rect x="262.9" y="341" width="5.3" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="265.86" y="351.5" ></text>
+</g>
+<g >
+<title>futex_wait (16 samples, 0.91%)</title><rect x="103.0" y="341" width="10.7" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="105.98" y="351.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (12 samples, 0.68%)</title><rect x="115.7" y="277" width="8.0" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="118.69" y="287.5" ></text>
+</g>
+<g >
+<title>core.DTNSim.mai (1,376 samples, 78.00%)</title><rect x="269.5" y="437" width="920.5" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text  x="272.55" y="447.5" >core.DTNSim.mai</text>
+</g>
+<g >
+<title>Ljavax/swing/JComponent:::paintChildren (1 samples, 0.06%)</title><rect x="44.1" y="405" width="0.7" height="15.0" fill="rgb(91,237,91)" rx="2" ry="2" />
+<text  x="47.12" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="255.5" y="325" width="0.7" height="15.0" fill="rgb(246,118,118)" rx="2" ry="2" />
+<text  x="258.50" y="335.5" ></text>
+</g>
+<g >
+<title>do_futex_wait.constprop.1 (17 samples, 0.96%)</title><rect x="155.8" y="405" width="11.4" height="15.0" fill="rgb(230,93,93)" rx="2" ry="2" />
+<text  x="158.83" y="415.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/graph/DirectedGraphConnections$1$1:::computeNext (62 samples, 3.51%)</title><rect x="406.0" y="421" width="41.5" height="15.0" fill="rgb(55,205,55)" rx="2" ry="2" />
+<text  x="409.01" y="431.5" >Lco..</text>
+</g>
+<g >
+<title>[libjvm.so] (11 samples, 0.62%)</title><rect x="199.3" y="325" width="7.4" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="202.31" y="335.5" ></text>
+</g>
+<g >
+<title>native_sched_clock (1 samples, 0.06%)</title><rect x="139.8" y="181" width="0.6" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="142.77" y="191.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1 samples, 0.06%)</title><rect x="171.2" y="325" width="0.7" height="15.0" fill="rgb(240,109,109)" rx="2" ry="2" />
+<text  x="174.21" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="341" width="2.0" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="1166.24" y="351.5" ></text>
+</g>
+<g >
+<title>sys_futex (13 samples, 0.74%)</title><rect x="115.7" y="373" width="8.7" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="118.69" y="383.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (1 samples, 0.06%)</title><rect x="1077.6" y="277" width="0.7" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="1080.62" y="287.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (17 samples, 0.96%)</title><rect x="206.7" y="389" width="11.3" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="209.67" y="399.5" ></text>
+</g>
+<g >
+<title>do_writev (1 samples, 0.06%)</title><rect x="90.3" y="325" width="0.6" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="93.27" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/util/HashSet:::add (110 samples, 6.24%)</title><rect x="565.9" y="421" width="73.6" height="15.0" fill="rgb(94,240,94)" rx="2" ry="2" />
+<text  x="568.88" y="431.5" >Ljava/ut..</text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="255.5" y="373" width="0.7" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text  x="258.50" y="383.5" ></text>
+</g>
+<g >
+<title>do_futex (16 samples, 0.91%)</title><rect x="125.7" y="357" width="10.7" height="15.0" fill="rgb(241,109,109)" rx="2" ry="2" />
+<text  x="128.73" y="367.5" ></text>
+</g>
+<g >
+<title>pthread_cond_timedwait@@GLIBC_2.3.2 (16 samples, 0.91%)</title><rect x="103.0" y="421" width="10.7" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="105.98" y="431.5" ></text>
+</g>
+<g >
+<title>wake_up_q (1 samples, 0.06%)</title><rect x="171.2" y="261" width="0.7" height="15.0" fill="rgb(216,74,74)" rx="2" ry="2" />
+<text  x="174.21" y="271.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (8 samples, 0.45%)</title><rect x="256.8" y="245" width="5.4" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="259.84" y="255.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="268.9" y="293" width="0.6" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="271.88" y="303.5" ></text>
+</g>
+<g >
+<title>Interpreter (1 samples, 0.06%)</title><rect x="24.7" y="341" width="0.7" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text  x="27.72" y="351.5" ></text>
+</g>
+<g >
+<title>generic_smp_call_function_single_interrupt (4 samples, 0.23%)</title><rect x="403.3" y="373" width="2.7" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="406.33" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="242.1" y="101" width="0.7" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text  x="245.12" y="111.5" ></text>
+</g>
+<g >
+<title>Interpreter (4 samples, 0.23%)</title><rect x="240.1" y="277" width="2.7" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="243.11" y="287.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="1085.6" y="293" width="0.7" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="1088.65" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (6 samples, 0.34%)</title><rect x="167.2" y="357" width="4.0" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="170.20" y="367.5" ></text>
+</g>
+<g >
+<title>Interpreter (2 samples, 0.11%)</title><rect x="101.6" y="261" width="1.4" height="15.0" fill="rgb(239,106,106)" rx="2" ry="2" />
+<text  x="104.64" y="271.5" ></text>
+</g>
+<g >
+<title>native_write_msr (12 samples, 0.68%)</title><rect x="173.9" y="181" width="8.0" height="15.0" fill="rgb(250,124,124)" rx="2" ry="2" />
+<text  x="176.89" y="191.5" ></text>
+</g>
+<g >
+<title>vfprintf (1 samples, 0.06%)</title><rect x="262.2" y="405" width="0.7" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text  x="265.19" y="415.5" ></text>
+</g>
+<g >
+<title>Interpreter (3 samples, 0.17%)</title><rect x="218.0" y="277" width="2.0" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="221.04" y="287.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="186.6" y="245" width="1.3" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text  x="189.60" y="255.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (1 samples, 0.06%)</title><rect x="171.2" y="341" width="0.7" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="174.21" y="351.5" ></text>
+</g>
+<g >
+<title>Lcore/ModuleCommunicationBus:::getDouble (2 samples, 0.11%)</title><rect x="508.4" y="421" width="1.3" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="511.36" y="431.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (16 samples, 0.91%)</title><rect x="229.4" y="245" width="10.7" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="232.41" y="255.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (16 samples, 0.91%)</title><rect x="206.7" y="229" width="10.7" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="209.67" y="239.5" ></text>
+</g>
+<g >
+<title>ret_from_intr (1 samples, 0.06%)</title><rect x="527.8" y="405" width="0.6" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="530.76" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1084.3" y="357" width="2.0" height="15.0" fill="rgb(213,68,68)" rx="2" ry="2" />
+<text  x="1087.31" y="367.5" ></text>
+</g>
+<g >
+<title>TimerQueue (20 samples, 1.13%)</title><rect x="229.4" y="437" width="13.4" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="232.41" y="447.5" ></text>
+</g>
+<g >
+<title>Lgui/DTNSimGUI:::runSim (1 samples, 0.06%)</title><rect x="1079.6" y="405" width="0.7" height="15.0" fill="rgb(188,188,55)" rx="2" ry="2" />
+<text  x="1082.63" y="415.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (7 samples, 0.40%)</title><rect x="1184.0" y="309" width="4.7" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="1186.98" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="125.1" y="277" width="0.6" height="15.0" fill="rgb(210,64,64)" rx="2" ry="2" />
+<text  x="128.06" y="287.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (6 samples, 0.34%)</title><rect x="202.0" y="245" width="4.0" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text  x="204.98" y="255.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (16 samples, 0.91%)</title><rect x="206.7" y="213" width="10.7" height="15.0" fill="rgb(221,80,80)" rx="2" ry="2" />
+<text  x="209.67" y="223.5" ></text>
+</g>
+<g >
+<title>Lcore/World:::update (1 samples, 0.06%)</title><rect x="509.7" y="421" width="0.7" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="512.69" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (11 samples, 0.62%)</title><rect x="199.3" y="373" width="7.4" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text  x="202.31" y="383.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (7 samples, 0.40%)</title><rect x="1184.0" y="197" width="4.7" height="15.0" fill="rgb(234,99,99)" rx="2" ry="2" />
+<text  x="1186.98" y="207.5" ></text>
+</g>
+<g >
+<title>native_apic_msr_write (1 samples, 0.06%)</title><rect x="220.7" y="197" width="0.7" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text  x="223.71" y="207.5" ></text>
+</g>
+<g >
+<title>smp_apic_timer_interrupt (1 samples, 0.06%)</title><rect x="638.8" y="389" width="0.7" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text  x="641.80" y="399.5" ></text>
+</g>
+<g >
+<title>__schedule (16 samples, 0.91%)</title><rect x="90.9" y="277" width="10.7" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="93.94" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/awt/Container:::addNotify (1 samples, 0.06%)</title><rect x="42.1" y="405" width="0.7" height="15.0" fill="rgb(77,225,77)" rx="2" ry="2" />
+<text  x="45.11" y="415.5" ></text>
+</g>
+<g >
+<title>Lrouting/AdaptiveRouter:::update (1 samples, 0.06%)</title><rect x="679.6" y="421" width="0.7" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text  x="682.60" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="137.8" y="293" width="0.6" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="140.77" y="303.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (8 samples, 0.45%)</title><rect x="256.8" y="373" width="5.4" height="15.0" fill="rgb(227,90,90)" rx="2" ry="2" />
+<text  x="259.84" y="383.5" ></text>
+</g>
+<g >
+<title>[unknown] (1 samples, 0.06%)</title><rect x="206.0" y="245" width="0.7" height="15.0" fill="rgb(213,70,70)" rx="2" ry="2" />
+<text  x="209.00" y="255.5" ></text>
+</g>
+<g >
+<title>Lsun/java2d/xr/XRDrawLine:::rasterizeLine (4 samples, 0.23%)</title><rect x="35.4" y="421" width="2.7" height="15.0" fill="rgb(53,202,53)" rx="2" ry="2" />
+<text  x="38.42" y="431.5" ></text>
+</g>
+<g >
+<title>swapgs_restore_regs_and_return_to_usermode (4 samples, 0.23%)</title><rect x="84.9" y="197" width="2.7" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="87.92" y="207.5" ></text>
+</g>
+<g >
+<title>native_apic_msr_write (1 samples, 0.06%)</title><rect x="84.9" y="37" width="0.7" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="87.92" y="47.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (16 samples, 0.91%)</title><rect x="155.8" y="245" width="10.7" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="158.83" y="255.5" ></text>
+</g>
+<g >
+<title>Java_sun_awt_X11_XToolkit_waitForEvents (2 samples, 0.11%)</title><rect x="101.6" y="213" width="1.4" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text  x="104.64" y="223.5" ></text>
+</g>
+<g >
+<title>__perf_event_enable (4 samples, 0.23%)</title><rect x="403.3" y="309" width="2.7" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="406.33" y="319.5" ></text>
+</g>
+<g >
+<title>sys_futex (17 samples, 0.96%)</title><rect x="155.8" y="357" width="11.4" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="158.83" y="367.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (8 samples, 0.45%)</title><rect x="262.9" y="245" width="5.3" height="15.0" fill="rgb(250,122,122)" rx="2" ry="2" />
+<text  x="265.86" y="255.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (4 samples, 0.23%)</title><rect x="84.9" y="69" width="2.7" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="87.92" y="79.5" ></text>
+</g>
+<g >
+<title>__schedule (17 samples, 0.96%)</title><rect x="206.7" y="277" width="11.3" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="209.67" y="287.5" ></text>
+</g>
+<g >
+<title>start_thread (5 samples, 0.28%)</title><rect x="84.9" y="421" width="3.4" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="87.92" y="431.5" ></text>
+</g>
+<g >
+<title>start_thread (7 samples, 0.40%)</title><rect x="151.1" y="421" width="4.7" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="154.15" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="152.5" y="309" width="3.3" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="155.48" y="319.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (16 samples, 0.91%)</title><rect x="244.8" y="245" width="10.7" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="247.80" y="255.5" ></text>
+</g>
+<g >
+<title>__schedule (16 samples, 0.91%)</title><rect x="103.0" y="293" width="10.7" height="15.0" fill="rgb(246,118,118)" rx="2" ry="2" />
+<text  x="105.98" y="303.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (16 samples, 0.91%)</title><rect x="103.0" y="245" width="10.7" height="15.0" fill="rgb(253,128,128)" rx="2" ry="2" />
+<text  x="105.98" y="255.5" ></text>
+</g>
+<g >
+<title>do_futex_wait.constprop.1 (16 samples, 0.91%)</title><rect x="171.9" y="405" width="10.7" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="174.88" y="415.5" ></text>
+</g>
+<g >
+<title>schedule (8 samples, 0.45%)</title><rect x="256.8" y="293" width="5.4" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="259.84" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="357" width="2.0" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="1166.24" y="367.5" ></text>
+</g>
+<g >
+<title>Ljava/util/HashMap:::get (1 samples, 0.06%)</title><rect x="71.5" y="389" width="0.7" height="15.0" fill="rgb(80,228,80)" rx="2" ry="2" />
+<text  x="74.54" y="399.5" ></text>
+</g>
+<g >
+<title>__schedule (8 samples, 0.45%)</title><rect x="262.9" y="293" width="5.3" height="15.0" fill="rgb(206,58,58)" rx="2" ry="2" />
+<text  x="265.86" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="102.3" y="165" width="0.7" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="105.31" y="175.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="168.5" y="293" width="2.7" height="15.0" fill="rgb(254,128,128)" rx="2" ry="2" />
+<text  x="171.54" y="303.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (16 samples, 0.91%)</title><rect x="90.9" y="245" width="10.7" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="93.94" y="255.5" ></text>
+</g>
+<g >
+<title>futex_wait (12 samples, 0.68%)</title><rect x="220.0" y="341" width="8.1" height="15.0" fill="rgb(239,108,108)" rx="2" ry="2" />
+<text  x="223.05" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="268.2" y="357" width="1.3" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="271.21" y="367.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="268.9" y="309" width="0.6" height="15.0" fill="rgb(205,57,57)" rx="2" ry="2" />
+<text  x="271.88" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="240.1" y="357" width="2.7" height="15.0" fill="rgb(206,60,60)" rx="2" ry="2" />
+<text  x="243.11" y="367.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (9 samples, 0.51%)</title><rect x="182.6" y="405" width="6.0" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text  x="185.59" y="415.5" ></text>
+</g>
+<g >
+<title>apic_timer_interrupt (1 samples, 0.06%)</title><rect x="446.1" y="405" width="0.7" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text  x="449.15" y="415.5" ></text>
+</g>
+<g >
+<title>futex_wait (13 samples, 0.74%)</title><rect x="115.7" y="341" width="8.7" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="118.69" y="351.5" ></text>
+</g>
+<g >
+<title>do_sys_poll (16 samples, 0.91%)</title><rect x="90.9" y="357" width="10.7" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text  x="93.94" y="367.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (4 samples, 0.23%)</title><rect x="403.3" y="261" width="2.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="406.33" y="271.5" ></text>
+</g>
+<g >
+<title>Interpreter (2 samples, 0.11%)</title><rect x="101.6" y="277" width="1.4" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="104.64" y="287.5" ></text>
+</g>
+<g >
+<title>native_write_msr (7 samples, 0.40%)</title><rect x="257.5" y="181" width="4.7" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text  x="260.51" y="191.5" ></text>
+</g>
+<g >
+<title>sys_futex (16 samples, 0.91%)</title><rect x="229.4" y="373" width="10.7" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="232.41" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (9 samples, 0.51%)</title><rect x="63.5" y="341" width="6.0" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="66.51" y="351.5" ></text>
+</g>
+<g >
+<title>__schedule (2 samples, 0.11%)</title><rect x="1078.3" y="325" width="1.3" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1081.29" y="335.5" ></text>
+</g>
+<g >
+<title>XRenderFillRectangles (2 samples, 0.11%)</title><rect x="69.5" y="373" width="1.4" height="15.0" fill="rgb(215,73,73)" rx="2" ry="2" />
+<text  x="72.54" y="383.5" ></text>
+</g>
+<g >
+<title>pthread_cond_timedwait@plt (1 samples, 0.06%)</title><rect x="228.7" y="293" width="0.7" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text  x="231.74" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (7 samples, 0.40%)</title><rect x="151.1" y="325" width="4.7" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="154.15" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="113.7" y="373" width="1.3" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text  x="116.68" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="242.1" y="117" width="0.7" height="15.0" fill="rgb(203,55,55)" rx="2" ry="2" />
+<text  x="245.12" y="127.5" ></text>
+</g>
+<g >
+<title>Lsun/java2d/xr/XRBackendNative:::XRenderRectanglesNative (25 samples, 1.42%)</title><rect x="54.1" y="389" width="16.8" height="15.0" fill="rgb(68,216,68)" rx="2" ry="2" />
+<text  x="57.15" y="399.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="228.1" y="373" width="1.3" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="231.07" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="1180.0" y="309" width="2.6" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text  x="1182.97" y="319.5" ></text>
+</g>
+<g >
+<title>XRenderFillRectangle (1 samples, 0.06%)</title><rect x="40.8" y="421" width="0.6" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text  x="43.77" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="124.4" y="357" width="1.3" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="127.39" y="367.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (18 samples, 1.02%)</title><rect x="139.1" y="373" width="12.0" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="142.10" y="383.5" ></text>
+</g>
+<g >
+<title>rebalance_domains (1 samples, 0.06%)</title><rect x="638.8" y="325" width="0.7" height="15.0" fill="rgb(202,54,54)" rx="2" ry="2" />
+<text  x="641.80" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/util/LinkedHashMap:::newNode (30 samples, 1.70%)</title><rect x="1120.4" y="405" width="20.1" height="15.0" fill="rgb(80,227,80)" rx="2" ry="2" />
+<text  x="1123.43" y="415.5" ></text>
+</g>
+<g >
+<title>Lscala/collection/mutable/ArrayBuffer:::$plus$eq (1 samples, 0.06%)</title><rect x="1157.9" y="405" width="0.7" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text  x="1160.89" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="137.8" y="277" width="0.6" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="140.77" y="287.5" ></text>
+</g>
+<g >
+<title>apic_timer_interrupt (2 samples, 0.11%)</title><rect x="402.0" y="405" width="1.3" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="405.00" y="415.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (8 samples, 0.45%)</title><rect x="262.9" y="229" width="5.3" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="265.86" y="239.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="101.6" y="309" width="1.4" height="15.0" fill="rgb(206,58,58)" rx="2" ry="2" />
+<text  x="104.64" y="319.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (1 samples, 0.06%)</title><rect x="187.9" y="245" width="0.7" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="190.94" y="255.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="84.9" y="325" width="3.4" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="87.92" y="335.5" ></text>
+</g>
+<g >
+<title>__remove_hrtimer (1 samples, 0.06%)</title><rect x="123.7" y="293" width="0.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="126.72" y="303.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1 samples, 0.06%)</title><rect x="256.2" y="373" width="0.6" height="15.0" fill="rgb(248,120,120)" rx="2" ry="2" />
+<text  x="259.17" y="383.5" ></text>
+</g>
+<g >
+<title>schedule (17 samples, 0.96%)</title><rect x="155.8" y="293" width="11.4" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="158.83" y="303.5" ></text>
+</g>
+<g >
+<title>Lsun/java2d/xr/XRDrawLine:::initCoordinates (1 samples, 0.06%)</title><rect x="34.8" y="421" width="0.6" height="15.0" fill="rgb(69,217,69)" rx="2" ry="2" />
+<text  x="37.75" y="431.5" ></text>
+</g>
+<g >
+<title>Ljavax/swing/RepaintManager$ProcessingRunnable:::run (1 samples, 0.06%)</title><rect x="44.8" y="405" width="0.7" height="15.0" fill="rgb(50,200,50)" rx="2" ry="2" />
+<text  x="47.78" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="20.7" y="373" width="0.7" height="15.0" fill="rgb(216,74,74)" rx="2" ry="2" />
+<text  x="23.70" y="383.5" ></text>
+</g>
+<g >
+<title>alloc_skb_with_frags (1 samples, 0.06%)</title><rect x="90.3" y="197" width="0.6" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="93.27" y="207.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (1 samples, 0.06%)</title><rect x="1176.0" y="389" width="0.6" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="1178.95" y="399.5" ></text>
+</g>
+<g >
+<title>native_apic_msr_write (1 samples, 0.06%)</title><rect x="189.9" y="181" width="0.7" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="192.94" y="191.5" ></text>
+</g>
+<g >
+<title>futex_wait (16 samples, 0.91%)</title><rect x="125.7" y="341" width="10.7" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text  x="128.73" y="351.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (17 samples, 0.96%)</title><rect x="206.7" y="373" width="11.3" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text  x="209.67" y="383.5" ></text>
+</g>
+<g >
+<title>Interpreter (5 samples, 0.28%)</title><rect x="84.9" y="277" width="3.4" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="87.92" y="287.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="136.4" y="373" width="2.7" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="139.43" y="383.5" ></text>
+</g>
+<g >
+<title>native_write_msr (15 samples, 0.85%)</title><rect x="245.5" y="197" width="10.0" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="248.46" y="207.5" ></text>
+</g>
+<g >
+<title>Interpreter (1 samples, 0.06%)</title><rect x="24.7" y="357" width="0.7" height="15.0" fill="rgb(204,55,55)" rx="2" ry="2" />
+<text  x="27.72" y="367.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (8 samples, 0.45%)</title><rect x="262.9" y="389" width="5.3" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="265.86" y="399.5" ></text>
+</g>
+<g >
+<title>schedule_hrtimeout_range (16 samples, 0.91%)</title><rect x="90.9" y="325" width="10.7" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text  x="93.94" y="335.5" ></text>
+</g>
+<g >
+<title>start_thread (11 samples, 0.62%)</title><rect x="199.3" y="421" width="7.4" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="202.31" y="431.5" ></text>
+</g>
+<g >
+<title>schedule (16 samples, 0.91%)</title><rect x="125.7" y="309" width="10.7" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="128.73" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="124.4" y="405" width="1.3" height="15.0" fill="rgb(202,54,54)" rx="2" ry="2" />
+<text  x="127.39" y="415.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (12 samples, 0.68%)</title><rect x="115.7" y="229" width="8.0" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="118.69" y="239.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1180.6" y="261" width="2.0" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="1183.63" y="271.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (1 samples, 0.06%)</title><rect x="138.4" y="293" width="0.7" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="141.44" y="303.5" ></text>
+</g>
+<g >
+<title>apic_timer_interrupt (1 samples, 0.06%)</title><rect x="649.5" y="405" width="0.7" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="652.50" y="415.5" ></text>
+</g>
+<g >
+<title>Interpreter (1 samples, 0.06%)</title><rect x="240.1" y="261" width="0.7" height="15.0" fill="rgb(254,128,128)" rx="2" ry="2" />
+<text  x="243.11" y="271.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (16 samples, 0.91%)</title><rect x="125.7" y="245" width="10.7" height="15.0" fill="rgb(205,57,57)" rx="2" ry="2" />
+<text  x="128.73" y="255.5" ></text>
+</g>
+<g >
+<title>intel_bts_enable_local (1 samples, 0.06%)</title><rect x="1184.0" y="181" width="0.6" height="15.0" fill="rgb(202,54,54)" rx="2" ry="2" />
+<text  x="1186.98" y="191.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (16 samples, 0.91%)</title><rect x="188.6" y="197" width="10.7" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="191.61" y="207.5" ></text>
+</g>
+<g >
+<title>thermal_interrupt (1 samples, 0.06%)</title><rect x="678.3" y="405" width="0.6" height="15.0" fill="rgb(252,125,125)" rx="2" ry="2" />
+<text  x="681.27" y="415.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (7 samples, 0.40%)</title><rect x="1184.0" y="229" width="4.7" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="1186.98" y="239.5" ></text>
+</g>
+<g >
+<title>intel_bts_enable_local (1 samples, 0.06%)</title><rect x="115.7" y="197" width="0.7" height="15.0" fill="rgb(210,64,64)" rx="2" ry="2" />
+<text  x="118.69" y="207.5" ></text>
+</g>
+<g >
+<title>native_sched_clock (1 samples, 0.06%)</title><rect x="256.8" y="181" width="0.7" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="259.84" y="191.5" ></text>
+</g>
+<g >
+<title>do_futex (16 samples, 0.91%)</title><rect x="171.9" y="341" width="10.7" height="15.0" fill="rgb(202,54,54)" rx="2" ry="2" />
+<text  x="174.88" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="218.0" y="341" width="2.0" height="15.0" fill="rgb(248,120,120)" rx="2" ry="2" />
+<text  x="221.04" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="245" width="2.0" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="1166.24" y="255.5" ></text>
+</g>
+<g >
+<title>call_function_single_interrupt (4 samples, 0.23%)</title><rect x="403.3" y="405" width="2.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="406.33" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="240.1" y="309" width="2.7" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="243.11" y="319.5" ></text>
+</g>
+<g >
+<title>update_load_avg (1 samples, 0.06%)</title><rect x="1079.0" y="261" width="0.6" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text  x="1081.96" y="271.5" ></text>
+</g>
+<g >
+<title>run_rebalance_domains (1 samples, 0.06%)</title><rect x="638.8" y="341" width="0.7" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="641.80" y="351.5" ></text>
+</g>
+<g >
+<title>VM_Thread (20 samples, 1.13%)</title><rect x="256.2" y="437" width="13.3" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="259.17" y="447.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (10 samples, 0.57%)</title><rect x="200.0" y="261" width="6.7" height="15.0" fill="rgb(253,128,128)" rx="2" ry="2" />
+<text  x="202.98" y="271.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (10 samples, 0.57%)</title><rect x="200.0" y="293" width="6.7" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="202.98" y="303.5" ></text>
+</g>
+<g >
+<title>native_apic_msr_write (1 samples, 0.06%)</title><rect x="139.1" y="181" width="0.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="142.10" y="191.5" ></text>
+</g>
+<g >
+<title>Ljava/security/AccessController:::getStackAccessControlContext (1 samples, 0.06%)</title><rect x="25.4" y="405" width="0.7" height="15.0" fill="rgb(56,205,56)" rx="2" ry="2" />
+<text  x="28.39" y="415.5" ></text>
+</g>
+<g >
+<title>[unknown] (2 samples, 0.11%)</title><rect x="89.6" y="421" width="1.3" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text  x="92.60" y="431.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1 samples, 0.06%)</title><rect x="90.3" y="357" width="0.6" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="93.27" y="367.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="84.9" y="309" width="3.4" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="87.92" y="319.5" ></text>
+</g>
+<g >
+<title>sys_futex (12 samples, 0.68%)</title><rect x="220.0" y="373" width="8.1" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text  x="223.05" y="383.5" ></text>
+</g>
+<g >
+<title>__schedule (4 samples, 0.23%)</title><rect x="1173.3" y="309" width="2.7" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="1176.28" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="113.7" y="405" width="1.3" height="15.0" fill="rgb(221,81,81)" rx="2" ry="2" />
+<text  x="116.68" y="415.5" ></text>
+</g>
+<g >
+<title>do_iter_write (1 samples, 0.06%)</title><rect x="90.3" y="293" width="0.6" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="93.27" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (7 samples, 0.40%)</title><rect x="151.1" y="357" width="4.7" height="15.0" fill="rgb(231,96,96)" rx="2" ry="2" />
+<text  x="154.15" y="367.5" ></text>
+</g>
+<g >
+<title>native_write_msr (5 samples, 0.28%)</title><rect x="1185.3" y="181" width="3.4" height="15.0" fill="rgb(206,58,58)" rx="2" ry="2" />
+<text  x="1188.32" y="191.5" ></text>
+</g>
+<g >
+<title>schedule (4 samples, 0.23%)</title><rect x="1173.3" y="325" width="2.7" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text  x="1176.28" y="335.5" ></text>
+</g>
+<g >
+<title>Ljavax/swing/text/Utilities:::drawTabbedText (1 samples, 0.06%)</title><rect x="26.1" y="421" width="0.6" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="29.05" y="431.5" ></text>
+</g>
+<g >
+<title>prepare_exit_to_usermode (1 samples, 0.06%)</title><rect x="446.8" y="389" width="0.7" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="449.81" y="399.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (17 samples, 0.96%)</title><rect x="155.8" y="389" width="11.4" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="158.83" y="399.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (16 samples, 0.91%)</title><rect x="206.7" y="197" width="10.7" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="209.67" y="207.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="228.1" y="389" width="1.3" height="15.0" fill="rgb(254,128,128)" rx="2" ry="2" />
+<text  x="231.07" y="399.5" ></text>
+</g>
+<g >
+<title>Ljava/util/LinkedHashMap$LinkedHashIterator:::hasNext (3 samples, 0.17%)</title><rect x="639.5" y="421" width="2.0" height="15.0" fill="rgb(103,249,103)" rx="2" ry="2" />
+<text  x="642.47" y="431.5" ></text>
+</g>
+<g >
+<title>sys_futex (16 samples, 0.91%)</title><rect x="171.9" y="357" width="10.7" height="15.0" fill="rgb(208,61,61)" rx="2" ry="2" />
+<text  x="174.88" y="367.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (16 samples, 0.91%)</title><rect x="125.7" y="213" width="10.7" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="128.73" y="223.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (1 samples, 0.06%)</title><rect x="114.4" y="277" width="0.6" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="117.35" y="287.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (16 samples, 0.91%)</title><rect x="139.1" y="245" width="10.7" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text  x="142.10" y="255.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (16 samples, 0.91%)</title><rect x="171.9" y="261" width="10.7" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="174.88" y="271.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="153.2" y="229" width="2.6" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="156.15" y="239.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (16 samples, 0.91%)</title><rect x="229.4" y="229" width="10.7" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text  x="232.41" y="239.5" ></text>
+</g>
+<g >
+<title>apic_timer_interrupt (1 samples, 0.06%)</title><rect x="1077.6" y="389" width="0.7" height="15.0" fill="rgb(221,81,81)" rx="2" ry="2" />
+<text  x="1080.62" y="399.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (16 samples, 0.91%)</title><rect x="229.4" y="277" width="10.7" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="232.41" y="287.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="240.1" y="341" width="2.7" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="243.11" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="21.4" y="325" width="0.6" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="24.37" y="335.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (12 samples, 0.68%)</title><rect x="220.0" y="389" width="8.1" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="223.05" y="399.5" ></text>
+</g>
+<g >
+<title>schedule (7 samples, 0.40%)</title><rect x="1184.0" y="293" width="4.7" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1186.98" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="240.1" y="405" width="2.7" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text  x="243.11" y="415.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (7 samples, 0.40%)</title><rect x="1184.0" y="213" width="4.7" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="1186.98" y="223.5" ></text>
+</g>
+<g >
+<title>Linterfaces/ConnectivityGrid:::getNearInterfaces (1 samples, 0.06%)</title><rect x="510.4" y="421" width="0.6" height="15.0" fill="rgb(178,178,51)" rx="2" ry="2" />
+<text  x="513.36" y="431.5" ></text>
+</g>
+<g >
+<title>sys_futex (7 samples, 0.40%)</title><rect x="1184.0" y="357" width="4.7" height="15.0" fill="rgb(248,120,120)" rx="2" ry="2" />
+<text  x="1186.98" y="367.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (16 samples, 0.91%)</title><rect x="90.9" y="261" width="10.7" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text  x="93.94" y="271.5" ></text>
+</g>
+<g >
+<title>futex_wait (16 samples, 0.91%)</title><rect x="188.6" y="325" width="10.7" height="15.0" fill="rgb(209,64,64)" rx="2" ry="2" />
+<text  x="191.61" y="335.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (16 samples, 0.91%)</title><rect x="155.8" y="213" width="10.7" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="158.83" y="223.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (9 samples, 0.51%)</title><rect x="182.6" y="389" width="6.0" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="185.59" y="399.5" ></text>
+</g>
+<g >
+<title>vtable stub (2 samples, 0.11%)</title><rect x="88.3" y="421" width="1.3" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="91.27" y="431.5" ></text>
+</g>
+<g >
+<title>native_write_msr (16 samples, 0.91%)</title><rect x="103.0" y="197" width="10.7" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="105.98" y="207.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (16 samples, 0.91%)</title><rect x="155.8" y="197" width="10.7" height="15.0" fill="rgb(204,57,57)" rx="2" ry="2" />
+<text  x="158.83" y="207.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (16 samples, 0.91%)</title><rect x="139.1" y="213" width="10.7" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text  x="142.10" y="223.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (7 samples, 0.40%)</title><rect x="151.1" y="405" width="4.7" height="15.0" fill="rgb(216,74,74)" rx="2" ry="2" />
+<text  x="154.15" y="415.5" ></text>
+</g>
+<g >
+<title>Lscala/collection/IndexedSeqOptimized:::reverse (17 samples, 0.96%)</title><rect x="1143.2" y="405" width="11.3" height="15.0" fill="rgb(200,200,59)" rx="2" ry="2" />
+<text  x="1146.17" y="415.5" ></text>
+</g>
+<g >
+<title>call_stub (4 samples, 0.23%)</title><rect x="240.1" y="293" width="2.7" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="243.11" y="303.5" ></text>
+</g>
+<g >
+<title>Lsun/awt/X11/XToolkit:::waitForEvents (2 samples, 0.11%)</title><rect x="101.6" y="229" width="1.4" height="15.0" fill="rgb(50,200,50)" rx="2" ry="2" />
+<text  x="104.64" y="239.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="242.1" y="213" width="0.7" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="245.12" y="223.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (16 samples, 0.91%)</title><rect x="139.1" y="229" width="10.7" height="15.0" fill="rgb(221,81,81)" rx="2" ry="2" />
+<text  x="142.10" y="239.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (12 samples, 0.68%)</title><rect x="115.7" y="261" width="8.0" height="15.0" fill="rgb(228,90,90)" rx="2" ry="2" />
+<text  x="118.69" y="271.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (1 samples, 0.06%)</title><rect x="1077.6" y="325" width="0.7" height="15.0" fill="rgb(210,64,64)" rx="2" ry="2" />
+<text  x="1080.62" y="335.5" ></text>
+</g>
+<g >
+<title>schedule (4 samples, 0.23%)</title><rect x="84.9" y="149" width="2.7" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text  x="87.92" y="159.5" ></text>
+</g>
+<g >
+<title>Ljavax/swing/JComponent:::paintBorder (1 samples, 0.06%)</title><rect x="24.7" y="421" width="0.7" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="27.72" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="218.0" y="389" width="2.0" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="221.04" y="399.5" ></text>
+</g>
+<g >
+<title>update_cfs_group (1 samples, 0.06%)</title><rect x="1077.6" y="245" width="0.7" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="1080.62" y="255.5" ></text>
+</g>
+<g >
+<title>run_rebalance_domains (1 samples, 0.06%)</title><rect x="446.1" y="341" width="0.7" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text  x="449.15" y="351.5" ></text>
+</g>
+<g >
+<title>vfs_writev (1 samples, 0.06%)</title><rect x="90.3" y="309" width="0.6" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text  x="93.27" y="319.5" ></text>
+</g>
+<g >
+<title>[libX11.so.6.3.0] (1 samples, 0.06%)</title><rect x="41.4" y="421" width="0.7" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="44.44" y="431.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (16 samples, 0.91%)</title><rect x="244.8" y="229" width="10.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="247.80" y="239.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="44.8" y="357" width="0.7" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="47.78" y="367.5" ></text>
+</g>
+<g >
+<title>do_futex (16 samples, 0.91%)</title><rect x="229.4" y="357" width="10.7" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text  x="232.41" y="367.5" ></text>
+</g>
+<g >
+<title>[unknown] (1 samples, 0.06%)</title><rect x="115.0" y="421" width="0.7" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text  x="118.02" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="44.8" y="341" width="0.7" height="15.0" fill="rgb(220,80,80)" rx="2" ry="2" />
+<text  x="47.78" y="351.5" ></text>
+</g>
+<g >
+<title>smp_apic_timer_interrupt (1 samples, 0.06%)</title><rect x="649.5" y="389" width="0.7" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text  x="652.50" y="399.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/graph/Graphs:::subgraphHasCycle (368 samples, 20.86%)</title><rect x="833.5" y="405" width="246.1" height="15.0" fill="rgb(70,219,70)" rx="2" ry="2" />
+<text  x="836.46" y="415.5" >Lcom/google/common/graph/Graphs:..</text>
+</g>
+<g >
+<title>native_write_msr (16 samples, 0.91%)</title><rect x="155.8" y="181" width="10.7" height="15.0" fill="rgb(215,71,71)" rx="2" ry="2" />
+<text  x="158.83" y="191.5" ></text>
+</g>
+<g >
+<title>Interpreter (1 samples, 0.06%)</title><rect x="24.7" y="389" width="0.7" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="27.72" y="399.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="218.0" y="325" width="2.0" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="221.04" y="335.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (8 samples, 0.45%)</title><rect x="262.9" y="405" width="5.3" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text  x="265.86" y="415.5" ></text>
+</g>
+<g >
+<title>schedule (16 samples, 0.91%)</title><rect x="188.6" y="293" width="10.7" height="15.0" fill="rgb(253,128,128)" rx="2" ry="2" />
+<text  x="191.61" y="303.5" ></text>
+</g>
+<g >
+<title>rebalance_domains (1 samples, 0.06%)</title><rect x="446.1" y="325" width="0.7" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="449.15" y="335.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (16 samples, 0.91%)</title><rect x="125.7" y="229" width="10.7" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="128.73" y="239.5" ></text>
+</g>
+<g >
+<title>ret_from_intr (1 samples, 0.06%)</title><rect x="1119.1" y="389" width="0.7" height="15.0" fill="rgb(221,80,80)" rx="2" ry="2" />
+<text  x="1122.09" y="399.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/Object:::hashCode (1 samples, 0.06%)</title><rect x="1118.4" y="389" width="0.7" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="1121.42" y="399.5" ></text>
+</g>
+<g >
+<title>Interpreter (5 samples, 0.28%)</title><rect x="84.9" y="261" width="3.4" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="87.92" y="271.5" ></text>
+</g>
+<g >
+<title>native_read_msr (1 samples, 0.06%)</title><rect x="678.3" y="357" width="0.6" height="15.0" fill="rgb(226,89,89)" rx="2" ry="2" />
+<text  x="681.27" y="367.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="124.4" y="293" width="1.3" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="127.39" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1180.6" y="277" width="2.0" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="1183.63" y="287.5" ></text>
+</g>
+<g >
+<title>__schedule (12 samples, 0.68%)</title><rect x="220.0" y="293" width="8.1" height="15.0" fill="rgb(246,118,118)" rx="2" ry="2" />
+<text  x="223.05" y="303.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (1 samples, 0.06%)</title><rect x="115.0" y="405" width="0.7" height="15.0" fill="rgb(220,80,80)" rx="2" ry="2" />
+<text  x="118.02" y="415.5" ></text>
+</g>
+<g >
+<title>C2_CompilerThre (16 samples, 0.91%)</title><rect x="115.0" y="437" width="10.7" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text  x="118.02" y="447.5" ></text>
+</g>
+<g >
+<title>__schedule (16 samples, 0.91%)</title><rect x="229.4" y="293" width="10.7" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text  x="232.41" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/util/LinkedHashMap$LinkedKeyIterator:::next (13 samples, 0.74%)</title><rect x="641.5" y="421" width="8.7" height="15.0" fill="rgb(69,218,69)" rx="2" ry="2" />
+<text  x="644.47" y="431.5" ></text>
+</g>
+<g >
+<title>getname_flags (1 samples, 0.06%)</title><rect x="256.2" y="309" width="0.6" height="15.0" fill="rgb(210,65,65)" rx="2" ry="2" />
+<text  x="259.17" y="319.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (12 samples, 0.68%)</title><rect x="115.7" y="213" width="8.0" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="118.69" y="223.5" ></text>
+</g>
+<g >
+<title>JVM_IHashCode (1 samples, 0.06%)</title><rect x="1118.4" y="373" width="0.7" height="15.0" fill="rgb(205,57,57)" rx="2" ry="2" />
+<text  x="1121.42" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="1182.0" y="213" width="0.6" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="1184.97" y="223.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="197" width="2.0" height="15.0" fill="rgb(215,71,71)" rx="2" ry="2" />
+<text  x="1166.24" y="207.5" ></text>
+</g>
+<g >
+<title>sys_poll (16 samples, 0.91%)</title><rect x="90.9" y="373" width="10.7" height="15.0" fill="rgb(229,93,93)" rx="2" ry="2" />
+<text  x="93.94" y="383.5" ></text>
+</g>
+<g >
+<title>Linterfaces/SimpleBroadcastInterface:::update (1 samples, 0.06%)</title><rect x="1083.6" y="405" width="0.7" height="15.0" fill="rgb(180,180,51)" rx="2" ry="2" />
+<text  x="1086.64" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="268.9" y="325" width="0.6" height="15.0" fill="rgb(210,64,64)" rx="2" ry="2" />
+<text  x="271.88" y="335.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (4 samples, 0.23%)</title><rect x="1173.3" y="277" width="2.7" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text  x="1176.28" y="287.5" ></text>
+</g>
+<g >
+<title>smp_apic_timer_interrupt (2 samples, 0.11%)</title><rect x="402.0" y="389" width="1.3" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="405.00" y="399.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/collect/AbstractIterator:::hasNext (202 samples, 11.45%)</title><rect x="270.9" y="421" width="135.1" height="15.0" fill="rgb(108,253,108)" rx="2" ry="2" />
+<text  x="273.88" y="431.5" >Lcom/google/commo..</text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="268.9" y="261" width="0.6" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="271.88" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/util/HashMap:::put (49 samples, 2.78%)</title><rect x="1087.0" y="405" width="32.8" height="15.0" fill="rgb(64,213,64)" rx="2" ry="2" />
+<text  x="1089.98" y="415.5" >Lj..</text>
+</g>
+<g >
+<title>update_curr (1 samples, 0.06%)</title><rect x="1078.3" y="261" width="0.7" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="1081.29" y="271.5" ></text>
+</g>
+<g >
+<title>do_futex (8 samples, 0.45%)</title><rect x="262.9" y="357" width="5.3" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="265.86" y="367.5" ></text>
+</g>
+<g >
+<title>Linterfaces/SimpleBroadcastInterface:::update (1 samples, 0.06%)</title><rect x="511.0" y="421" width="0.7" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="514.03" y="431.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (4 samples, 0.23%)</title><rect x="403.3" y="277" width="2.7" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="406.33" y="287.5" ></text>
+</g>
+<g >
+<title>pick_next_task_idle (1 samples, 0.06%)</title><rect x="217.4" y="261" width="0.6" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="220.37" y="271.5" ></text>
+</g>
+<g >
+<title>do_futex (13 samples, 0.74%)</title><rect x="115.7" y="357" width="8.7" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="118.69" y="367.5" ></text>
+</g>
+<g >
+<title>sys_writev (1 samples, 0.06%)</title><rect x="90.3" y="341" width="0.6" height="15.0" fill="rgb(242,112,112)" rx="2" ry="2" />
+<text  x="93.27" y="351.5" ></text>
+</g>
+<g >
+<title>[libX11.so.6.3.0] (1 samples, 0.06%)</title><rect x="89.6" y="405" width="0.7" height="15.0" fill="rgb(228,92,92)" rx="2" ry="2" />
+<text  x="92.60" y="415.5" ></text>
+</g>
+<g >
+<title>__alloc_skb (1 samples, 0.06%)</title><rect x="90.3" y="181" width="0.6" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="93.27" y="191.5" ></text>
+</g>
+<g >
+<title>native_apic_msr_write (1 samples, 0.06%)</title><rect x="229.4" y="197" width="0.7" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="232.41" y="207.5" ></text>
+</g>
+<g >
+<title>do_futex (12 samples, 0.68%)</title><rect x="220.0" y="357" width="8.1" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text  x="223.05" y="367.5" ></text>
+</g>
+<g >
+<title>__schedule (7 samples, 0.40%)</title><rect x="1184.0" y="277" width="4.7" height="15.0" fill="rgb(232,96,96)" rx="2" ry="2" />
+<text  x="1186.98" y="287.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (2 samples, 0.11%)</title><rect x="402.0" y="373" width="1.3" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="405.00" y="383.5" ></text>
+</g>
+<g >
+<title>update_process_times (2 samples, 0.11%)</title><rect x="402.0" y="309" width="1.3" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="405.00" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="229" width="2.0" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text  x="1166.24" y="239.5" ></text>
+</g>
+<g >
+<title>Ljavax/swing/Timer:::post (2 samples, 0.11%)</title><rect x="241.5" y="261" width="1.3" height="15.0" fill="rgb(104,250,104)" rx="2" ry="2" />
+<text  x="244.45" y="271.5" ></text>
+</g>
+<g >
+<title>__schedule (4 samples, 0.23%)</title><rect x="84.9" y="133" width="2.7" height="15.0" fill="rgb(225,86,86)" rx="2" ry="2" />
+<text  x="87.92" y="143.5" ></text>
+</g>
+<g >
+<title>jint_disjoint_arraycopy (1 samples, 0.06%)</title><rect x="1086.3" y="389" width="0.7" height="15.0" fill="rgb(222,83,83)" rx="2" ry="2" />
+<text  x="1089.32" y="399.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="268.9" y="277" width="0.6" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="271.88" y="287.5" ></text>
+</g>
+<g >
+<title>[unknown] (16 samples, 0.91%)</title><rect x="1165.2" y="405" width="10.8" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text  x="1168.25" y="415.5" ></text>
+</g>
+<g >
+<title>sys_futex (8 samples, 0.45%)</title><rect x="256.8" y="357" width="5.4" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text  x="259.84" y="367.5" ></text>
+</g>
+<g >
+<title>call_stub (2 samples, 0.11%)</title><rect x="101.6" y="293" width="1.4" height="15.0" fill="rgb(222,83,83)" rx="2" ry="2" />
+<text  x="104.64" y="303.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (2 samples, 0.11%)</title><rect x="402.0" y="341" width="1.3" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="405.00" y="351.5" ></text>
+</g>
+<g >
+<title>__schedule (12 samples, 0.68%)</title><rect x="115.7" y="293" width="8.0" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text  x="118.69" y="303.5" ></text>
+</g>
+<g >
+<title>do_sys_open (1 samples, 0.06%)</title><rect x="256.2" y="341" width="0.6" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="259.17" y="351.5" ></text>
+</g>
+<g >
+<title>intel_thermal_interrupt (1 samples, 0.06%)</title><rect x="678.3" y="373" width="0.6" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="681.27" y="383.5" ></text>
+</g>
+<g >
+<title>native_write_msr (3 samples, 0.17%)</title><rect x="85.6" y="37" width="2.0" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="88.59" y="47.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="136.4" y="405" width="2.7" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="139.43" y="415.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (1 samples, 0.06%)</title><rect x="402.7" y="293" width="0.6" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="405.66" y="303.5" ></text>
+</g>
+<g >
+<title>Interpreter (3 samples, 0.17%)</title><rect x="218.0" y="261" width="2.0" height="15.0" fill="rgb(207,60,60)" rx="2" ry="2" />
+<text  x="221.04" y="271.5" ></text>
+</g>
+<g >
+<title>__vdso_clock_gettime (1 samples, 0.06%)</title><rect x="115.0" y="389" width="0.7" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="118.02" y="399.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (16 samples, 0.91%)</title><rect x="125.7" y="405" width="10.7" height="15.0" fill="rgb(207,60,60)" rx="2" ry="2" />
+<text  x="128.73" y="415.5" ></text>
+</g>
+<g >
+<title>do_futex_wait.constprop.1 (18 samples, 1.02%)</title><rect x="139.1" y="405" width="12.0" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text  x="142.10" y="415.5" ></text>
+</g>
+<g >
+<title>native_write_msr (14 samples, 0.79%)</title><rect x="127.1" y="197" width="9.3" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="130.06" y="207.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (12 samples, 0.68%)</title><rect x="220.0" y="405" width="8.1" height="15.0" fill="rgb(242,112,112)" rx="2" ry="2" />
+<text  x="223.05" y="415.5" ></text>
+</g>
+<g >
+<title>pthread_cond_wait@@GLIBC_2.3.2 (7 samples, 0.40%)</title><rect x="1184.0" y="405" width="4.7" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="1186.98" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="169.9" y="229" width="1.3" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="172.88" y="239.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (1 samples, 0.06%)</title><rect x="446.1" y="357" width="0.7" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text  x="449.15" y="367.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="124.4" y="325" width="1.3" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text  x="127.39" y="335.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (17 samples, 0.96%)</title><rect x="206.7" y="309" width="11.3" height="15.0" fill="rgb(209,64,64)" rx="2" ry="2" />
+<text  x="209.67" y="319.5" ></text>
+</g>
+<g >
+<title>[unknown] (17 samples, 0.96%)</title><rect x="206.7" y="421" width="11.3" height="15.0" fill="rgb(210,65,65)" rx="2" ry="2" />
+<text  x="209.67" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="101.6" y="325" width="1.4" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text  x="104.64" y="335.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (8 samples, 0.45%)</title><rect x="256.8" y="261" width="5.4" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text  x="259.84" y="271.5" ></text>
+</g>
+<g >
+<title>tick_do_update_jiffies64.part.11 (1 samples, 0.06%)</title><rect x="649.5" y="309" width="0.7" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="652.50" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="84.9" y="405" width="3.4" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="87.92" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="218.0" y="309" width="2.0" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="221.04" y="319.5" ></text>
+</g>
+<g >
+<title>native_write_msr (10 samples, 0.57%)</title><rect x="221.4" y="197" width="6.7" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text  x="224.38" y="207.5" ></text>
+</g>
+<g >
+<title>do_iter_readv_writev (1 samples, 0.06%)</title><rect x="90.3" y="277" width="0.6" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="93.27" y="287.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="405" width="2.0" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text  x="1166.24" y="415.5" ></text>
+</g>
+<g >
+<title>GC_Thread#2 (25 samples, 1.42%)</title><rect x="171.9" y="437" width="16.7" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="174.88" y="447.5" ></text>
+</g>
+<g >
+<title>put_prev_entity (2 samples, 0.11%)</title><rect x="1078.3" y="277" width="1.3" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1081.29" y="287.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (6 samples, 0.34%)</title><rect x="184.6" y="309" width="4.0" height="15.0" fill="rgb(240,109,109)" rx="2" ry="2" />
+<text  x="187.59" y="319.5" ></text>
+</g>
+<g >
+<title>__schedule (16 samples, 0.91%)</title><rect x="188.6" y="277" width="10.7" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="191.61" y="287.5" ></text>
+</g>
+<g >
+<title>Lcore/DTNHost:::update (5 samples, 0.28%)</title><rect x="505.0" y="421" width="3.4" height="15.0" fill="rgb(221,221,67)" rx="2" ry="2" />
+<text  x="508.01" y="431.5" ></text>
+</g>
+<g >
+<title>schedule_hrtimeout_range_clock (16 samples, 0.91%)</title><rect x="90.9" y="309" width="10.7" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="93.94" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="101.6" y="357" width="1.4" height="15.0" fill="rgb(253,127,127)" rx="2" ry="2" />
+<text  x="104.64" y="367.5" ></text>
+</g>
+<g >
+<title>swapgs_restore_regs_and_return_to_usermode (2 samples, 0.11%)</title><rect x="1078.3" y="389" width="1.3" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="1081.29" y="399.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/graph/Graphs:::reachableNodes (105 samples, 5.95%)</title><rect x="763.2" y="405" width="70.3" height="15.0" fill="rgb(96,243,96)" rx="2" ry="2" />
+<text  x="766.22" y="415.5" >Lcom/go..</text>
+</g>
+<g >
+<title>do_syscall_64 (7 samples, 0.40%)</title><rect x="1184.0" y="373" width="4.7" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="1186.98" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="114.4" y="293" width="0.6" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="117.35" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="168.5" y="277" width="2.7" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="171.54" y="287.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (17 samples, 0.96%)</title><rect x="155.8" y="373" width="11.4" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="158.83" y="383.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1 samples, 0.06%)</title><rect x="138.4" y="277" width="0.7" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="141.44" y="287.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="102.3" y="133" width="0.7" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text  x="105.31" y="143.5" ></text>
+</g>
+<g >
+<title>vtable stub (1 samples, 0.06%)</title><rect x="1188.7" y="405" width="0.6" height="15.0" fill="rgb(210,65,65)" rx="2" ry="2" />
+<text  x="1191.66" y="415.5" ></text>
+</g>
+<g >
+<title>exit_to_usermode_loop (4 samples, 0.23%)</title><rect x="84.9" y="165" width="2.7" height="15.0" fill="rgb(216,74,74)" rx="2" ry="2" />
+<text  x="87.92" y="175.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="1085.6" y="325" width="0.7" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="1088.65" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/util/HashMap:::put (8 samples, 0.45%)</title><rect x="533.8" y="421" width="5.3" height="15.0" fill="rgb(76,224,76)" rx="2" ry="2" />
+<text  x="536.78" y="431.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (2 samples, 0.11%)</title><rect x="402.0" y="325" width="1.3" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text  x="405.00" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="136.4" y="389" width="2.7" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="139.43" y="399.5" ></text>
+</g>
+<g >
+<title>do_futex (18 samples, 1.02%)</title><rect x="243.5" y="357" width="12.0" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="246.46" y="367.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (16 samples, 0.91%)</title><rect x="125.7" y="325" width="10.7" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="128.73" y="335.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (18 samples, 1.02%)</title><rect x="139.1" y="309" width="12.0" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text  x="142.10" y="319.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (16 samples, 0.91%)</title><rect x="229.4" y="325" width="10.7" height="15.0" fill="rgb(210,65,65)" rx="2" ry="2" />
+<text  x="232.41" y="335.5" ></text>
+</g>
+<g >
+<title>pthread_cond_wait@@GLIBC_2.3.2 (17 samples, 0.96%)</title><rect x="206.7" y="405" width="11.3" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="209.67" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="125.1" y="245" width="0.6" height="15.0" fill="rgb(206,58,58)" rx="2" ry="2" />
+<text  x="128.06" y="255.5" ></text>
+</g>
+<g >
+<title>update_process_times (1 samples, 0.06%)</title><rect x="1077.6" y="293" width="0.7" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="1080.62" y="303.5" ></text>
+</g>
+<g >
+<title>schedule (17 samples, 0.96%)</title><rect x="244.1" y="309" width="11.4" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="247.13" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/util/ArrayList:::toArray (1 samples, 0.06%)</title><rect x="1086.3" y="405" width="0.7" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="1089.32" y="415.5" ></text>
+</g>
+<g >
+<title>start_thread (9 samples, 0.51%)</title><rect x="182.6" y="421" width="6.0" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="185.59" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="218.0" y="405" width="2.0" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text  x="221.04" y="415.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (16 samples, 0.91%)</title><rect x="155.8" y="229" width="10.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="158.83" y="239.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (1 samples, 0.06%)</title><rect x="45.5" y="357" width="0.6" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="48.45" y="367.5" ></text>
+</g>
+<g >
+<title>Ljava/util/HashMap:::resize (1 samples, 0.06%)</title><rect x="1119.8" y="405" width="0.6" height="15.0" fill="rgb(69,217,69)" rx="2" ry="2" />
+<text  x="1122.76" y="415.5" ></text>
+</g>
+<g >
+<title>itable stub (5 samples, 0.28%)</title><rect x="1172.6" y="389" width="3.4" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="1175.61" y="399.5" ></text>
+</g>
+<g >
+<title>pick_next_task_fair (1 samples, 0.06%)</title><rect x="166.5" y="261" width="0.7" height="15.0" fill="rgb(239,106,106)" rx="2" ry="2" />
+<text  x="169.53" y="271.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (11 samples, 0.62%)</title><rect x="199.3" y="341" width="7.4" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text  x="202.31" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (9 samples, 0.51%)</title><rect x="182.6" y="357" width="6.0" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text  x="185.59" y="367.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (1 samples, 0.06%)</title><rect x="256.2" y="389" width="0.6" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="259.17" y="399.5" ></text>
+</g>
+<g >
+<title>sem_post@@GLIBC_2.2.5 (1 samples, 0.06%)</title><rect x="171.2" y="357" width="0.7" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="174.21" y="367.5" ></text>
+</g>
+<g >
+<title>do_futex (16 samples, 0.91%)</title><rect x="103.0" y="357" width="10.7" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="105.98" y="367.5" ></text>
+</g>
+<g >
+<title>pthread_cond_timedwait@@GLIBC_2.3.2 (12 samples, 0.68%)</title><rect x="220.0" y="421" width="8.1" height="15.0" fill="rgb(227,90,90)" rx="2" ry="2" />
+<text  x="223.05" y="431.5" ></text>
+</g>
+<g >
+<title>Lsun/swing/SwingUtilities2$KeyPair:::hashCode (1 samples, 0.06%)</title><rect x="40.1" y="421" width="0.7" height="15.0" fill="rgb(64,213,64)" rx="2" ry="2" />
+<text  x="43.10" y="431.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (12 samples, 0.68%)</title><rect x="72.9" y="213" width="8.0" height="15.0" fill="rgb(234,99,99)" rx="2" ry="2" />
+<text  x="75.88" y="223.5" ></text>
+</g>
+<g >
+<title>pthread_cond_wait@@GLIBC_2.3.2 (12 samples, 0.68%)</title><rect x="72.9" y="405" width="8.0" height="15.0" fill="rgb(221,81,81)" rx="2" ry="2" />
+<text  x="75.88" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (11 samples, 0.62%)</title><rect x="199.3" y="405" width="7.4" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="202.31" y="415.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (4 samples, 0.23%)</title><rect x="1173.3" y="293" width="2.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="1176.28" y="303.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (16 samples, 0.91%)</title><rect x="171.9" y="373" width="10.7" height="15.0" fill="rgb(240,109,109)" rx="2" ry="2" />
+<text  x="174.88" y="383.5" ></text>
+</g>
+<g >
+<title>Ljava/awt/EventDispatchThread:::pumpOneEventForFilters (2 samples, 0.11%)</title><rect x="20.7" y="421" width="1.3" height="15.0" fill="rgb(107,252,107)" rx="2" ry="2" />
+<text  x="23.70" y="431.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (17 samples, 0.96%)</title><rect x="155.8" y="309" width="11.4" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="158.83" y="319.5" ></text>
+</g>
+<g >
+<title>__schedule (18 samples, 1.02%)</title><rect x="139.1" y="277" width="12.0" height="15.0" fill="rgb(235,102,102)" rx="2" ry="2" />
+<text  x="142.10" y="287.5" ></text>
+</g>
+<g >
+<title>rb_erase (1 samples, 0.06%)</title><rect x="45.5" y="293" width="0.6" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="48.45" y="303.5" ></text>
+</g>
+<g >
+<title>[unknown] (16 samples, 0.91%)</title><rect x="188.6" y="421" width="10.7" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text  x="191.61" y="431.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (16 samples, 0.91%)</title><rect x="171.9" y="197" width="10.7" height="15.0" fill="rgb(229,93,93)" rx="2" ry="2" />
+<text  x="174.88" y="207.5" ></text>
+</g>
+<g >
+<title>Lscroll/internal/graph/ScalaRoleGraph:::filter (1 samples, 0.06%)</title><rect x="1162.6" y="405" width="0.6" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="1165.57" y="415.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (4 samples, 0.23%)</title><rect x="1173.3" y="229" width="2.7" height="15.0" fill="rgb(229,93,93)" rx="2" ry="2" />
+<text  x="1176.28" y="239.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="125.1" y="229" width="0.6" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text  x="128.06" y="239.5" ></text>
+</g>
+<g >
+<title>jint_disjoint_arraycopy (6 samples, 0.34%)</title><rect x="521.7" y="405" width="4.0" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="524.73" y="415.5" ></text>
+</g>
+<g >
+<title>_new_instance_Java (8 samples, 0.45%)</title><rect x="1177.3" y="405" width="5.3" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="1180.29" y="415.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (12 samples, 0.68%)</title><rect x="72.9" y="309" width="8.0" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="75.88" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (6 samples, 0.34%)</title><rect x="1178.6" y="373" width="4.0" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="1181.63" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (16 samples, 0.91%)</title><rect x="58.8" y="357" width="10.7" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="61.83" y="367.5" ></text>
+</g>
+<g >
+<title>Interpreter (1 samples, 0.06%)</title><rect x="24.7" y="373" width="0.7" height="15.0" fill="rgb(221,81,81)" rx="2" ry="2" />
+<text  x="27.72" y="383.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (18 samples, 1.02%)</title><rect x="243.5" y="325" width="12.0" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="246.46" y="335.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (16 samples, 0.91%)</title><rect x="244.8" y="213" width="10.7" height="15.0" fill="rgb(253,127,127)" rx="2" ry="2" />
+<text  x="247.80" y="223.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="228.7" y="309" width="0.7" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text  x="231.74" y="319.5" ></text>
+</g>
+<g >
+<title>Lscala/collection/generic/Growable:::$init$ (1 samples, 0.06%)</title><rect x="1157.2" y="405" width="0.7" height="15.0" fill="rgb(200,200,59)" rx="2" ry="2" />
+<text  x="1160.22" y="415.5" ></text>
+</g>
+<g >
+<title>Lscroll/internal/Compartment$Player:::applyDynamic (2 samples, 0.11%)</title><rect x="1160.6" y="405" width="1.3" height="15.0" fill="rgb(209,209,62)" rx="2" ry="2" />
+<text  x="1163.57" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="168.5" y="261" width="2.7" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="171.54" y="271.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (16 samples, 0.91%)</title><rect x="171.9" y="389" width="10.7" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text  x="174.88" y="399.5" ></text>
+</g>
+<g >
+<title>Ljava/util/HashMap:::resize (40 samples, 2.27%)</title><rect x="539.1" y="421" width="26.8" height="15.0" fill="rgb(101,246,101)" rx="2" ry="2" />
+<text  x="542.13" y="431.5" >L..</text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="241.5" y="229" width="1.3" height="15.0" fill="rgb(231,96,96)" rx="2" ry="2" />
+<text  x="244.45" y="239.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (16 samples, 0.91%)</title><rect x="229.4" y="213" width="10.7" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="232.41" y="223.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="293" width="2.0" height="15.0" fill="rgb(203,54,54)" rx="2" ry="2" />
+<text  x="1166.24" y="303.5" ></text>
+</g>
+<g >
+<title>__GI___libc_open (1 samples, 0.06%)</title><rect x="256.2" y="405" width="0.6" height="15.0" fill="rgb(210,65,65)" rx="2" ry="2" />
+<text  x="259.17" y="415.5" ></text>
+</g>
+<g >
+<title>try_to_wake_up (1 samples, 0.06%)</title><rect x="171.2" y="245" width="0.7" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="174.21" y="255.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (16 samples, 0.91%)</title><rect x="229.4" y="405" width="10.7" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="232.41" y="415.5" ></text>
+</g>
+<g >
+<title>start_thread (2 samples, 0.11%)</title><rect x="113.7" y="421" width="1.3" height="15.0" fill="rgb(217,74,74)" rx="2" ry="2" />
+<text  x="116.68" y="431.5" ></text>
+</g>
+<g >
+<title>__clock_gettime (2 samples, 0.11%)</title><rect x="1176.0" y="405" width="1.3" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text  x="1178.95" y="415.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (18 samples, 1.02%)</title><rect x="243.5" y="389" width="12.0" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text  x="246.46" y="399.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (12 samples, 0.68%)</title><rect x="72.9" y="373" width="8.0" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="75.88" y="383.5" ></text>
+</g>
+<g >
+<title>Ljavax/swing/RepaintManager:::addDirtyRegion0 (1 samples, 0.06%)</title><rect x="25.4" y="421" width="0.7" height="15.0" fill="rgb(60,210,60)" rx="2" ry="2" />
+<text  x="28.39" y="431.5" ></text>
+</g>
+<g >
+<title>Lrouting/AdaptiveRouter:::update (2 samples, 0.11%)</title><rect x="1141.8" y="405" width="1.4" height="15.0" fill="rgb(226,226,68)" rx="2" ry="2" />
+<text  x="1144.84" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="114.4" y="309" width="0.6" height="15.0" fill="rgb(203,55,55)" rx="2" ry="2" />
+<text  x="117.35" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (6 samples, 0.34%)</title><rect x="184.6" y="293" width="4.0" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="187.59" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="242.1" y="165" width="0.7" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="245.12" y="175.5" ></text>
+</g>
+<g >
+<title>sys_futex (8 samples, 0.45%)</title><rect x="262.9" y="373" width="5.3" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text  x="265.86" y="383.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (1 samples, 0.06%)</title><rect x="21.4" y="309" width="0.6" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="24.37" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="228.7" y="325" width="0.7" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text  x="231.74" y="335.5" ></text>
+</g>
+<g >
+<title>rcu_check_callbacks (1 samples, 0.06%)</title><rect x="402.0" y="293" width="0.7" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="405.00" y="303.5" ></text>
+</g>
+<g >
+<title>pick_next_task_rt (2 samples, 0.11%)</title><rect x="1078.3" y="309" width="1.3" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="1081.29" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="136.4" y="357" width="2.7" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="139.43" y="367.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (16 samples, 0.91%)</title><rect x="188.6" y="309" width="10.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="191.61" y="319.5" ></text>
+</g>
+<g >
+<title>JVM_GetStackAccessControlContext (3 samples, 0.17%)</title><rect x="1084.3" y="373" width="2.0" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="1087.31" y="383.5" ></text>
+</g>
+<g >
+<title>__schedule (17 samples, 0.96%)</title><rect x="155.8" y="277" width="11.4" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="158.83" y="287.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (16 samples, 0.91%)</title><rect x="90.9" y="405" width="10.7" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="93.94" y="415.5" ></text>
+</g>
+<g >
+<title>Ljdk/internal/math/FormattedFloatingDecimal:::fillDecimal (1 samples, 0.06%)</title><rect x="26.7" y="421" width="0.7" height="15.0" fill="rgb(67,216,67)" rx="2" ry="2" />
+<text  x="29.72" y="431.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (16 samples, 0.91%)</title><rect x="90.9" y="389" width="10.7" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="93.94" y="399.5" ></text>
+</g>
+<g >
+<title>[unknown] (1 samples, 0.06%)</title><rect x="90.3" y="405" width="0.6" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text  x="93.27" y="415.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (18 samples, 1.02%)</title><rect x="243.5" y="405" width="12.0" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="246.46" y="415.5" ></text>
+</g>
+<g >
+<title>pthread_cond_timedwait@@GLIBC_2.3.2 (16 samples, 0.91%)</title><rect x="125.7" y="421" width="10.7" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text  x="128.73" y="431.5" ></text>
+</g>
+<g >
+<title>intel_pmu_handle_irq (2 samples, 0.11%)</title><rect x="188.6" y="181" width="1.3" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="191.61" y="191.5" ></text>
+</g>
+<g >
+<title>start_thread (2 samples, 0.11%)</title><rect x="101.6" y="421" width="1.4" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="104.64" y="431.5" ></text>
+</g>
+<g >
+<title>prepare_exit_to_usermode (4 samples, 0.23%)</title><rect x="1173.3" y="357" width="2.7" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="1176.28" y="367.5" ></text>
+</g>
+<g >
+<title>flush_smp_call_function_queue (4 samples, 0.23%)</title><rect x="403.3" y="357" width="2.7" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="406.33" y="367.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="137.1" y="325" width="2.0" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="140.10" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/util/concurrent/DelayQueue:::take (1 samples, 0.06%)</title><rect x="240.8" y="261" width="0.7" height="15.0" fill="rgb(66,215,66)" rx="2" ry="2" />
+<text  x="243.78" y="271.5" ></text>
+</g>
+<g >
+<title>Lscroll/internal/ICompartment:::addPlaysRelation (1 samples, 0.06%)</title><rect x="1161.9" y="405" width="0.7" height="15.0" fill="rgb(196,196,57)" rx="2" ry="2" />
+<text  x="1164.90" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (8 samples, 0.45%)</title><rect x="1177.3" y="389" width="5.3" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="1180.29" y="399.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="242.1" y="197" width="0.7" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="245.12" y="207.5" ></text>
+</g>
+<g >
+<title>intel_pmu_handle_irq (1 samples, 0.06%)</title><rect x="262.9" y="197" width="0.6" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="265.86" y="207.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (7 samples, 0.40%)</title><rect x="1184.0" y="245" width="4.7" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="1186.98" y="255.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="255.5" y="357" width="0.7" height="15.0" fill="rgb(253,128,128)" rx="2" ry="2" />
+<text  x="258.50" y="367.5" ></text>
+</g>
+<g >
+<title>put_prev_task_fair (2 samples, 0.11%)</title><rect x="1078.3" y="293" width="1.3" height="15.0" fill="rgb(248,120,120)" rx="2" ry="2" />
+<text  x="1081.29" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="169.2" y="245" width="2.0" height="15.0" fill="rgb(204,57,57)" rx="2" ry="2" />
+<text  x="172.21" y="255.5" ></text>
+</g>
+<g >
+<title>sys_futex (17 samples, 0.96%)</title><rect x="206.7" y="357" width="11.3" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="209.67" y="367.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (16 samples, 0.91%)</title><rect x="244.8" y="261" width="10.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="247.80" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/security/AccessController:::doPrivileged (1 samples, 0.06%)</title><rect x="20.7" y="405" width="0.7" height="15.0" fill="rgb(69,218,69)" rx="2" ry="2" />
+<text  x="23.70" y="415.5" ></text>
+</g>
+<g >
+<title>do_futex (17 samples, 0.96%)</title><rect x="155.8" y="341" width="11.4" height="15.0" fill="rgb(246,118,118)" rx="2" ry="2" />
+<text  x="158.83" y="351.5" ></text>
+</g>
+<g >
+<title>GC_Thread#3 (27 samples, 1.53%)</title><rect x="188.6" y="437" width="18.1" height="15.0" fill="rgb(234,99,99)" rx="2" ry="2" />
+<text  x="191.61" y="447.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (12 samples, 0.68%)</title><rect x="220.0" y="245" width="8.1" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="223.05" y="255.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (1 samples, 0.06%)</title><rect x="1077.6" y="357" width="0.7" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="1080.62" y="367.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (6 samples, 0.34%)</title><rect x="184.6" y="261" width="4.0" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="187.59" y="271.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (17 samples, 0.96%)</title><rect x="244.1" y="277" width="11.4" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text  x="247.13" y="287.5" ></text>
+</g>
+<g >
+<title>Lscala/collection/mutable/ArrayBuffer:::$plus$plus$eq (3 samples, 0.17%)</title><rect x="1158.6" y="405" width="2.0" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="1161.56" y="415.5" ></text>
+</g>
+<g >
+<title>native_apic_msr_write (1 samples, 0.06%)</title><rect x="244.8" y="197" width="0.7" height="15.0" fill="rgb(225,86,86)" rx="2" ry="2" />
+<text  x="247.80" y="207.5" ></text>
+</g>
+<g >
+<title>hrtimer_cancel (1 samples, 0.06%)</title><rect x="123.7" y="325" width="0.7" height="15.0" fill="rgb(207,61,61)" rx="2" ry="2" />
+<text  x="126.72" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="242.1" y="149" width="0.7" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="245.12" y="159.5" ></text>
+</g>
+<g >
+<title>start_thread (7 samples, 0.40%)</title><rect x="167.2" y="421" width="4.7" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text  x="170.20" y="431.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/graph/Graphs:::hasCycle (38 samples, 2.15%)</title><rect x="737.8" y="405" width="25.4" height="15.0" fill="rgb(58,208,58)" rx="2" ry="2" />
+<text  x="740.80" y="415.5" >L..</text>
+</g>
+<g >
+<title>__hrtimer_run_queues (1 samples, 0.06%)</title><rect x="45.5" y="341" width="0.6" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text  x="48.45" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (11 samples, 0.62%)</title><rect x="199.3" y="389" width="7.4" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text  x="202.31" y="399.5" ></text>
+</g>
+<g >
+<title>tick_sched_do_timer (1 samples, 0.06%)</title><rect x="649.5" y="325" width="0.7" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="652.50" y="335.5" ></text>
+</g>
+<g >
+<title>apic_timer_interrupt (1 samples, 0.06%)</title><rect x="45.5" y="389" width="0.6" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="48.45" y="399.5" ></text>
+</g>
+<g >
+<title>Lcore/ModuleCommunicationBus:::getDouble (1 samples, 0.06%)</title><rect x="10.0" y="421" width="0.7" height="15.0" fill="rgb(227,227,68)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" ></text>
+</g>
+<g >
+<title>AWT-XAWT (20 samples, 1.13%)</title><rect x="89.6" y="437" width="13.4" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text  x="92.60" y="447.5" ></text>
+</g>
+<g >
+<title>pick_next_task_fair (2 samples, 0.11%)</title><rect x="149.8" y="261" width="1.3" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="152.81" y="271.5" ></text>
+</g>
+<g >
+<title>schedule (16 samples, 0.91%)</title><rect x="90.9" y="293" width="10.7" height="15.0" fill="rgb(221,81,81)" rx="2" ry="2" />
+<text  x="93.94" y="303.5" ></text>
+</g>
+<g >
+<title>[unknown] (59 samples, 3.34%)</title><rect x="42.1" y="421" width="39.5" height="15.0" fill="rgb(231,96,96)" rx="2" ry="2" />
+<text  x="45.11" y="431.5" >[un..</text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (8 samples, 0.45%)</title><rect x="262.9" y="213" width="5.3" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="265.86" y="223.5" ></text>
+</g>
+<g >
+<title>GC_Thread#0 (25 samples, 1.42%)</title><rect x="139.1" y="437" width="16.7" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="142.10" y="447.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (6 samples, 0.34%)</title><rect x="167.2" y="325" width="4.0" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="170.20" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="124.4" y="309" width="1.3" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text  x="127.39" y="319.5" ></text>
+</g>
+<g >
+<title>smp_apic_timer_interrupt (1 samples, 0.06%)</title><rect x="1077.6" y="373" width="0.7" height="15.0" fill="rgb(253,127,127)" rx="2" ry="2" />
+<text  x="1080.62" y="383.5" ></text>
+</g>
+<g >
+<title>schedule (12 samples, 0.68%)</title><rect x="115.7" y="309" width="8.0" height="15.0" fill="rgb(202,54,54)" rx="2" ry="2" />
+<text  x="118.69" y="319.5" ></text>
+</g>
+<g >
+<title>native_write_msr (7 samples, 0.40%)</title><rect x="263.5" y="197" width="4.7" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="266.53" y="207.5" ></text>
+</g>
+<g >
+<title>fast_new_instance Runtime1 stub (2 samples, 0.11%)</title><rect x="241.5" y="245" width="1.3" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="244.45" y="255.5" ></text>
+</g>
+<g >
+<title>futex_wake (1 samples, 0.06%)</title><rect x="171.2" y="277" width="0.7" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="174.21" y="287.5" ></text>
+</g>
+<g >
+<title>rcu_irq_exit (1 samples, 0.06%)</title><rect x="1119.1" y="357" width="0.7" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text  x="1122.09" y="367.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1180.6" y="293" width="2.0" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="1183.63" y="303.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (16 samples, 0.91%)</title><rect x="103.0" y="277" width="10.7" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text  x="105.98" y="287.5" ></text>
+</g>
+<g >
+<title>sys_futex (16 samples, 0.91%)</title><rect x="103.0" y="373" width="10.7" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text  x="105.98" y="383.5" ></text>
+</g>
+<g >
+<title>Interpreter (1 samples, 0.06%)</title><rect x="24.7" y="325" width="0.7" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text  x="27.72" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="101.6" y="181" width="1.4" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="104.64" y="191.5" ></text>
+</g>
+<g >
+<title>[unknown] (17 samples, 0.96%)</title><rect x="155.8" y="421" width="11.4" height="15.0" fill="rgb(248,120,120)" rx="2" ry="2" />
+<text  x="158.83" y="431.5" ></text>
+</g>
+<g >
+<title>schedule (16 samples, 0.91%)</title><rect x="171.9" y="293" width="10.7" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text  x="174.88" y="303.5" ></text>
+</g>
+<g >
+<title>do_futex_wait.constprop.1 (8 samples, 0.45%)</title><rect x="256.8" y="405" width="5.4" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text  x="259.84" y="415.5" ></text>
+</g>
+<g >
+<title>Lsun/java2d/xr/XRRenderer:::drawLine (3 samples, 0.17%)</title><rect x="38.1" y="421" width="2.0" height="15.0" fill="rgb(68,217,68)" rx="2" ry="2" />
+<text  x="41.10" y="431.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (16 samples, 0.91%)</title><rect x="188.6" y="373" width="10.7" height="15.0" fill="rgb(234,99,99)" rx="2" ry="2" />
+<text  x="191.61" y="383.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (12 samples, 0.68%)</title><rect x="72.9" y="389" width="8.0" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="75.88" y="399.5" ></text>
+</g>
+<g >
+<title>Java_sun_java2d_xr_XRBackendNative_XRenderRectanglesNative (17 samples, 0.96%)</title><rect x="58.2" y="373" width="11.3" height="15.0" fill="rgb(223,83,83)" rx="2" ry="2" />
+<text  x="61.16" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (7 samples, 0.40%)</title><rect x="151.1" y="341" width="4.7" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text  x="154.15" y="351.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (16 samples, 0.91%)</title><rect x="103.0" y="325" width="10.7" height="15.0" fill="rgb(229,93,93)" rx="2" ry="2" />
+<text  x="105.98" y="335.5" ></text>
+</g>
+<g >
+<title>hrtimer_try_to_cancel (1 samples, 0.06%)</title><rect x="123.7" y="309" width="0.7" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="126.72" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/awt/EventQueue:::setCurrentEventAndMostRecentTimeImpl (1 samples, 0.06%)</title><rect x="22.0" y="421" width="0.7" height="15.0" fill="rgb(108,253,108)" rx="2" ry="2" />
+<text  x="25.04" y="431.5" ></text>
+</g>
+<g >
+<title>futex_wait (7 samples, 0.40%)</title><rect x="1184.0" y="325" width="4.7" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text  x="1186.98" y="335.5" ></text>
+</g>
+<g >
+<title>kmem_cache_alloc (1 samples, 0.06%)</title><rect x="256.2" y="293" width="0.6" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="259.17" y="303.5" ></text>
+</g>
+<g >
+<title>update_blocked_averages (1 samples, 0.06%)</title><rect x="166.5" y="245" width="0.7" height="15.0" fill="rgb(221,80,80)" rx="2" ry="2" />
+<text  x="169.53" y="255.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="84.9" y="389" width="3.4" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="87.92" y="399.5" ></text>
+</g>
+<g >
+<title>sys_futex (18 samples, 1.02%)</title><rect x="243.5" y="373" width="12.0" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="246.46" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="261" width="2.0" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="1166.24" y="271.5" ></text>
+</g>
+<g >
+<title>intel_pmu_handle_irq (1 samples, 0.06%)</title><rect x="206.7" y="181" width="0.6" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text  x="209.67" y="191.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/Object:::&lt;init&gt; (1 samples, 0.06%)</title><rect x="511.7" y="421" width="0.7" height="15.0" fill="rgb(100,246,100)" rx="2" ry="2" />
+<text  x="514.70" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (9 samples, 0.51%)</title><rect x="182.6" y="341" width="6.0" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="185.59" y="351.5" ></text>
+</g>
+<g >
+<title>_dl_update_slotinfo (1 samples, 0.06%)</title><rect x="1164.6" y="181" width="0.6" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="1167.58" y="191.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (7 samples, 0.40%)</title><rect x="1184.0" y="389" width="4.7" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text  x="1186.98" y="399.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="152.5" y="293" width="3.3" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="155.48" y="303.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (12 samples, 0.68%)</title><rect x="115.7" y="245" width="8.0" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="118.69" y="255.5" ></text>
+</g>
+<g >
+<title>[unknown] (9 samples, 0.51%)</title><rect x="256.2" y="421" width="6.0" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text  x="259.17" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="124.4" y="389" width="1.3" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="127.39" y="399.5" ></text>
+</g>
+<g >
+<title>[unknown] (753 samples, 42.69%)</title><rect x="685.6" y="421" width="503.7" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="688.62" y="431.5" >[unknown]</text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="25.4" y="389" width="0.7" height="15.0" fill="rgb(214,71,71)" rx="2" ry="2" />
+<text  x="28.39" y="399.5" ></text>
+</g>
+<g >
+<title>update_blocked_averages (2 samples, 0.11%)</title><rect x="149.8" y="245" width="1.3" height="15.0" fill="rgb(224,86,86)" rx="2" ry="2" />
+<text  x="152.81" y="255.5" ></text>
+</g>
+<g >
+<title>schedule (12 samples, 0.68%)</title><rect x="220.0" y="309" width="8.1" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="223.05" y="319.5" ></text>
+</g>
+<g >
+<title>do_futex (16 samples, 0.91%)</title><rect x="188.6" y="341" width="10.7" height="15.0" fill="rgb(250,122,122)" rx="2" ry="2" />
+<text  x="191.61" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (11 samples, 0.62%)</title><rect x="199.3" y="357" width="7.4" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="202.31" y="367.5" ></text>
+</g>
+<g >
+<title>[unknown] (1 samples, 0.06%)</title><rect x="71.5" y="405" width="0.7" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="74.54" y="415.5" ></text>
+</g>
+<g >
+<title>Ljava/util/HashMap$ValueIterator:::next (1 samples, 0.06%)</title><rect x="533.1" y="421" width="0.7" height="15.0" fill="rgb(52,202,52)" rx="2" ry="2" />
+<text  x="536.11" y="431.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (1 samples, 0.06%)</title><rect x="1077.6" y="309" width="0.7" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="1080.62" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="113.7" y="357" width="1.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="116.68" y="367.5" ></text>
+</g>
+<g >
+<title>rb_erase (1 samples, 0.06%)</title><rect x="123.7" y="261" width="0.7" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="126.72" y="271.5" ></text>
+</g>
+<g >
+<title>__lll_unlock_wake (1 samples, 0.06%)</title><rect x="138.4" y="309" width="0.7" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="141.44" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (6 samples, 0.34%)</title><rect x="184.6" y="277" width="4.0" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="187.59" y="287.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (16 samples, 0.91%)</title><rect x="188.6" y="245" width="10.7" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="191.61" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/util/LinkedHashMap:::afterNodeInsertion (18 samples, 1.02%)</title><rect x="650.2" y="421" width="12.0" height="15.0" fill="rgb(69,217,69)" rx="2" ry="2" />
+<text  x="653.17" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="101.6" y="197" width="1.4" height="15.0" fill="rgb(207,60,60)" rx="2" ry="2" />
+<text  x="104.64" y="207.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (4 samples, 0.23%)</title><rect x="403.3" y="245" width="2.7" height="15.0" fill="rgb(242,112,112)" rx="2" ry="2" />
+<text  x="406.33" y="255.5" ></text>
+</g>
+<g >
+<title>__schedule (12 samples, 0.68%)</title><rect x="72.9" y="277" width="8.0" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="75.88" y="287.5" ></text>
+</g>
+<g >
+<title>do_futex_wait.constprop.1 (16 samples, 0.91%)</title><rect x="188.6" y="405" width="10.7" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="191.61" y="415.5" ></text>
+</g>
+<g >
+<title>sys_futex (18 samples, 1.02%)</title><rect x="139.1" y="357" width="12.0" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="142.10" y="367.5" ></text>
+</g>
+<g >
+<title>call_stub (5 samples, 0.28%)</title><rect x="84.9" y="293" width="3.4" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="87.92" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="102.3" y="149" width="0.7" height="15.0" fill="rgb(253,127,127)" rx="2" ry="2" />
+<text  x="105.31" y="159.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (18 samples, 1.02%)</title><rect x="139.1" y="389" width="12.0" height="15.0" fill="rgb(253,127,127)" rx="2" ry="2" />
+<text  x="142.10" y="399.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (16 samples, 0.91%)</title><rect x="139.1" y="261" width="10.7" height="15.0" fill="rgb(205,57,57)" rx="2" ry="2" />
+<text  x="142.10" y="271.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (16 samples, 0.91%)</title><rect x="125.7" y="277" width="10.7" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="128.73" y="287.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="113.7" y="341" width="1.3" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="116.68" y="351.5" ></text>
+</g>
+<g >
+<title>G1_Young_RemSet (20 samples, 1.13%)</title><rect x="125.7" y="437" width="13.4" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="128.73" y="447.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="218.0" y="357" width="2.0" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="221.04" y="367.5" ></text>
+</g>
+<g >
+<title>irq_exit (1 samples, 0.06%)</title><rect x="638.8" y="373" width="0.7" height="15.0" fill="rgb(242,112,112)" rx="2" ry="2" />
+<text  x="641.80" y="383.5" ></text>
+</g>
+<g >
+<title>start_thread (3 samples, 0.17%)</title><rect x="218.0" y="421" width="2.0" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="221.04" y="431.5" ></text>
+</g>
+<g >
+<title>do_futex (1 samples, 0.06%)</title><rect x="171.2" y="293" width="0.7" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text  x="174.21" y="303.5" ></text>
+</g>
+<g >
+<title>Ljavax/swing/JComponent:::paint (1 samples, 0.06%)</title><rect x="43.4" y="405" width="0.7" height="15.0" fill="rgb(75,223,75)" rx="2" ry="2" />
+<text  x="46.45" y="415.5" ></text>
+</g>
+<g >
+<title>schedule (8 samples, 0.45%)</title><rect x="262.9" y="309" width="5.3" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="265.86" y="319.5" ></text>
+</g>
+<g >
+<title>native_write_msr (13 samples, 0.74%)</title><rect x="190.6" y="181" width="8.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="193.61" y="191.5" ></text>
+</g>
+<g >
+<title>smp_apic_timer_interrupt (1 samples, 0.06%)</title><rect x="45.5" y="373" width="0.6" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="48.45" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="136.4" y="341" width="2.7" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text  x="139.43" y="351.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (12 samples, 0.68%)</title><rect x="72.9" y="245" width="8.0" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="75.88" y="255.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (16 samples, 0.91%)</title><rect x="206.7" y="245" width="10.7" height="15.0" fill="rgb(223,83,83)" rx="2" ry="2" />
+<text  x="209.67" y="255.5" ></text>
+</g>
+<g >
+<title>unix_stream_sendmsg (1 samples, 0.06%)</title><rect x="90.3" y="229" width="0.6" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="93.27" y="239.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (16 samples, 0.91%)</title><rect x="103.0" y="229" width="10.7" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="105.98" y="239.5" ></text>
+</g>
+<g >
+<title>task_tick_fair (1 samples, 0.06%)</title><rect x="402.7" y="277" width="0.6" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="405.66" y="287.5" ></text>
+</g>
+<g >
+<title>__poll (16 samples, 0.91%)</title><rect x="90.9" y="421" width="10.7" height="15.0" fill="rgb(234,99,99)" rx="2" ry="2" />
+<text  x="93.94" y="431.5" ></text>
+</g>
+<g >
+<title>pthread_cond_timedwait@@GLIBC_2.3.2 (13 samples, 0.74%)</title><rect x="115.7" y="421" width="8.7" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text  x="118.69" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="228.1" y="405" width="1.3" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="231.07" y="415.5" ></text>
+</g>
+<g >
+<title>native_write_msr (15 samples, 0.85%)</title><rect x="91.6" y="181" width="10.0" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text  x="94.61" y="191.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (16 samples, 0.91%)</title><rect x="171.9" y="213" width="10.7" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="174.88" y="223.5" ></text>
+</g>
+<g >
+<title>XRenderFindDisplay (1 samples, 0.06%)</title><rect x="70.9" y="405" width="0.6" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="73.87" y="415.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/cache/LocalCache$LocalLoadingCache:::get (1 samples, 0.06%)</title><rect x="269.5" y="421" width="0.7" height="15.0" fill="rgb(72,220,72)" rx="2" ry="2" />
+<text  x="272.55" y="431.5" ></text>
+</g>
+<g >
+<title>Ljava/util/Collections$UnmodifiableCollection$1:::next (2 samples, 0.11%)</title><rect x="531.8" y="421" width="1.3" height="15.0" fill="rgb(54,203,54)" rx="2" ry="2" />
+<text  x="534.77" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="1179.3" y="341" width="3.3" height="15.0" fill="rgb(210,65,65)" rx="2" ry="2" />
+<text  x="1182.30" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="1118.4" y="357" width="0.7" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="1121.42" y="367.5" ></text>
+</g>
+<g >
+<title>do_futex (8 samples, 0.45%)</title><rect x="256.8" y="341" width="5.4" height="15.0" fill="rgb(207,60,60)" rx="2" ry="2" />
+<text  x="259.84" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="152.5" y="277" width="3.3" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="155.48" y="287.5" ></text>
+</g>
+<g >
+<title>JVM_GetStackAccessControlContext (1 samples, 0.06%)</title><rect x="21.4" y="389" width="0.6" height="15.0" fill="rgb(251,124,124)" rx="2" ry="2" />
+<text  x="24.37" y="399.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="325" width="2.0" height="15.0" fill="rgb(228,90,90)" rx="2" ry="2" />
+<text  x="1166.24" y="335.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (4 samples, 0.23%)</title><rect x="84.9" y="85" width="2.7" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text  x="87.92" y="95.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1180.6" y="245" width="2.0" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="1183.63" y="255.5" ></text>
+</g>
+<g >
+<title>futex_wait (12 samples, 0.68%)</title><rect x="72.9" y="325" width="8.0" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="75.88" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="240.1" y="373" width="2.7" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="243.11" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="113.7" y="389" width="1.3" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="116.68" y="399.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="84.9" y="341" width="3.4" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="87.92" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="1085.6" y="309" width="0.7" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1088.65" y="319.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (1 samples, 0.06%)</title><rect x="649.5" y="341" width="0.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="652.50" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/security/AccessController:::doPrivileged (1 samples, 0.06%)</title><rect x="44.8" y="389" width="0.7" height="15.0" fill="rgb(94,240,94)" rx="2" ry="2" />
+<text  x="47.78" y="399.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (2 samples, 0.11%)</title><rect x="402.0" y="357" width="1.3" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="405.00" y="367.5" ></text>
+</g>
+<g >
+<title>Lsun/font/FontDesignMetrics:::getMetrics (1 samples, 0.06%)</title><rect x="45.5" y="405" width="0.6" height="15.0" fill="rgb(74,222,74)" rx="2" ry="2" />
+<text  x="48.45" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="277" width="2.0" height="15.0" fill="rgb(241,109,109)" rx="2" ry="2" />
+<text  x="1166.24" y="287.5" ></text>
+</g>
+<g >
+<title>[unknown] (18 samples, 1.02%)</title><rect x="139.1" y="421" width="12.0" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="142.10" y="431.5" ></text>
+</g>
+<g >
+<title>irq_exit (1 samples, 0.06%)</title><rect x="446.1" y="373" width="0.7" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="449.15" y="383.5" ></text>
+</g>
+<g >
+<title>task_tick_fair (1 samples, 0.06%)</title><rect x="1077.6" y="261" width="0.7" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="1080.62" y="271.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="1179.3" y="357" width="3.3" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="1182.30" y="367.5" ></text>
+</g>
+<g >
+<title>__schedule (16 samples, 0.91%)</title><rect x="125.7" y="293" width="10.7" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="128.73" y="303.5" ></text>
+</g>
+<g >
+<title>start_thread (2 samples, 0.11%)</title><rect x="124.4" y="421" width="1.3" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="127.39" y="431.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (16 samples, 0.91%)</title><rect x="206.7" y="261" width="10.7" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text  x="209.67" y="271.5" ></text>
+</g>
+<g >
+<title>futex_wait (17 samples, 0.96%)</title><rect x="206.7" y="325" width="11.3" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="209.67" y="335.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (16 samples, 0.91%)</title><rect x="90.9" y="229" width="10.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="93.94" y="239.5" ></text>
+</g>
+<g >
+<title>native_write_msr (12 samples, 0.68%)</title><rect x="72.9" y="181" width="8.0" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text  x="75.88" y="191.5" ></text>
+</g>
+<g >
+<title>handle_edge_irq (1 samples, 0.06%)</title><rect x="527.8" y="357" width="0.6" height="15.0" fill="rgb(203,55,55)" rx="2" ry="2" />
+<text  x="530.76" y="367.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (16 samples, 0.91%)</title><rect x="125.7" y="389" width="10.7" height="15.0" fill="rgb(235,102,102)" rx="2" ry="2" />
+<text  x="128.73" y="399.5" ></text>
+</g>
+<g >
+<title>intel_bts_enable_local (1 samples, 0.06%)</title><rect x="220.0" y="197" width="0.7" height="15.0" fill="rgb(203,54,54)" rx="2" ry="2" />
+<text  x="223.05" y="207.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="268.2" y="341" width="1.3" height="15.0" fill="rgb(210,64,64)" rx="2" ry="2" />
+<text  x="271.21" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (3 samples, 0.17%)</title><rect x="1163.2" y="309" width="2.0" height="15.0" fill="rgb(216,74,74)" rx="2" ry="2" />
+<text  x="1166.24" y="319.5" ></text>
+</g>
+<g >
+<title>Ljavax/swing/JComponent:::_paintImmediately (1 samples, 0.06%)</title><rect x="24.0" y="421" width="0.7" height="15.0" fill="rgb(51,201,51)" rx="2" ry="2" />
+<text  x="27.05" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="255.5" y="405" width="0.7" height="15.0" fill="rgb(223,83,83)" rx="2" ry="2" />
+<text  x="258.50" y="415.5" ></text>
+</g>
+<g >
+<title>all (1,764 samples, 100%)</title><rect x="10.0" y="453" width="1180.0" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" ></text>
+</g>
+<g >
+<title>itable stub (5 samples, 0.28%)</title><rect x="81.6" y="421" width="3.3" height="15.0" fill="rgb(253,127,127)" rx="2" ry="2" />
+<text  x="84.58" y="431.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (1 samples, 0.06%)</title><rect x="649.5" y="357" width="0.7" height="15.0" fill="rgb(203,54,54)" rx="2" ry="2" />
+<text  x="652.50" y="367.5" ></text>
+</g>
+<g >
+<title>sock_write_iter (1 samples, 0.06%)</title><rect x="90.3" y="261" width="0.6" height="15.0" fill="rgb(215,73,73)" rx="2" ry="2" />
+<text  x="93.27" y="271.5" ></text>
+</g>
+<g >
+<title>schedule (16 samples, 0.91%)</title><rect x="103.0" y="309" width="10.7" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="105.98" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (7 samples, 0.40%)</title><rect x="167.2" y="373" width="4.7" height="15.0" fill="rgb(214,71,71)" rx="2" ry="2" />
+<text  x="170.20" y="383.5" ></text>
+</g>
+<g >
+<title>call_stub (3 samples, 0.17%)</title><rect x="218.0" y="293" width="2.0" height="15.0" fill="rgb(253,127,127)" rx="2" ry="2" />
+<text  x="221.04" y="303.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/graph/Graphs:::subgraphHasCycle (9 samples, 0.51%)</title><rect x="499.0" y="421" width="6.0" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text  x="501.99" y="431.5" ></text>
+</g>
+<g >
+<title>[unknown] (3 samples, 0.17%)</title><rect x="1163.2" y="389" width="2.0" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="1166.24" y="399.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (16 samples, 0.91%)</title><rect x="90.9" y="197" width="10.7" height="15.0" fill="rgb(232,96,96)" rx="2" ry="2" />
+<text  x="93.94" y="207.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/graph/Graphs:::reachableNodes (76 samples, 4.31%)</title><rect x="448.2" y="421" width="50.8" height="15.0" fill="rgb(84,231,84)" rx="2" ry="2" />
+<text  x="451.15" y="431.5" >Lcom/..</text>
+</g>
+<g >
+<title>exit_to_usermode_loop (2 samples, 0.11%)</title><rect x="1078.3" y="357" width="1.3" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="1081.29" y="367.5" ></text>
+</g>
+<g >
+<title>smp_call_function_single_interrupt (4 samples, 0.23%)</title><rect x="403.3" y="389" width="2.7" height="15.0" fill="rgb(214,71,71)" rx="2" ry="2" />
+<text  x="406.33" y="399.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (1 samples, 0.06%)</title><rect x="1077.6" y="341" width="0.7" height="15.0" fill="rgb(206,60,60)" rx="2" ry="2" />
+<text  x="1080.62" y="351.5" ></text>
+</g>
+<g >
+<title>native_write_msr (14 samples, 0.79%)</title><rect x="140.4" y="181" width="9.4" height="15.0" fill="rgb(203,55,55)" rx="2" ry="2" />
+<text  x="143.44" y="191.5" ></text>
+</g>
+<g >
+<title>intel_tfa_pmu_enable_all (8 samples, 0.45%)</title><rect x="256.8" y="213" width="5.4" height="15.0" fill="rgb(219,79,79)" rx="2" ry="2" />
+<text  x="259.84" y="223.5" ></text>
+</g>
+<g >
+<title>__schedule (8 samples, 0.45%)</title><rect x="256.8" y="277" width="5.4" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="259.84" y="287.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (12 samples, 0.68%)</title><rect x="72.9" y="229" width="8.0" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="75.88" y="239.5" ></text>
+</g>
+<g >
+<title>schedule (2 samples, 0.11%)</title><rect x="1078.3" y="341" width="1.3" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text  x="1081.29" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="242.1" y="133" width="0.7" height="15.0" fill="rgb(208,61,61)" rx="2" ry="2" />
+<text  x="245.12" y="143.5" ></text>
+</g>
+<g >
+<title>Interpreter (2 samples, 0.11%)</title><rect x="101.6" y="245" width="1.4" height="15.0" fill="rgb(229,93,93)" rx="2" ry="2" />
+<text  x="104.64" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/util/ArrayList:::toArray (1 samples, 0.06%)</title><rect x="528.4" y="421" width="0.7" height="15.0" fill="rgb(70,218,70)" rx="2" ry="2" />
+<text  x="531.42" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="101.6" y="405" width="1.4" height="15.0" fill="rgb(220,80,80)" rx="2" ry="2" />
+<text  x="104.64" y="415.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (1 samples, 0.06%)</title><rect x="649.5" y="373" width="0.7" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text  x="652.50" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (10 samples, 0.57%)</title><rect x="200.0" y="277" width="6.7" height="15.0" fill="rgb(251,125,125)" rx="2" ry="2" />
+<text  x="202.98" y="287.5" ></text>
+</g>
+<g >
+<title>Lrouting/AbstractCompartment:::applyDispatchQuery (1 samples, 0.06%)</title><rect x="678.9" y="421" width="0.7" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="681.93" y="431.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (16 samples, 0.91%)</title><rect x="155.8" y="261" width="10.7" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="158.83" y="271.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (10 samples, 0.57%)</title><rect x="200.0" y="309" width="6.7" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="202.98" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (6 samples, 0.34%)</title><rect x="167.2" y="341" width="4.0" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="170.20" y="351.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (16 samples, 0.91%)</title><rect x="103.0" y="213" width="10.7" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="105.98" y="223.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock (1 samples, 0.06%)</title><rect x="527.8" y="341" width="0.6" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="530.76" y="351.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="113.7" y="325" width="1.3" height="15.0" fill="rgb(207,60,60)" rx="2" ry="2" />
+<text  x="116.68" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="1085.6" y="341" width="0.7" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="1088.65" y="351.5" ></text>
+</g>
+<g >
+<title>decay_load (1 samples, 0.06%)</title><rect x="1079.0" y="245" width="0.6" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1081.96" y="255.5" ></text>
+</g>
+<g >
+<title>sock_alloc_send_pskb (1 samples, 0.06%)</title><rect x="90.3" y="213" width="0.6" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text  x="93.27" y="223.5" ></text>
+</g>
+<g >
+<title>Interpreter (5 samples, 0.28%)</title><rect x="84.9" y="245" width="3.4" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="87.92" y="255.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="240.1" y="389" width="2.7" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="243.11" y="399.5" ></text>
+</g>
+<g >
+<title>vtable stub (1 samples, 0.06%)</title><rect x="1189.3" y="421" width="0.7" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="1192.33" y="431.5" ></text>
+</g>
+<g >
+<title>ctx_resched (4 samples, 0.23%)</title><rect x="403.3" y="293" width="2.7" height="15.0" fill="rgb(210,64,64)" rx="2" ry="2" />
+<text  x="406.33" y="303.5" ></text>
+</g>
+<g >
+<title>timerqueue_del (1 samples, 0.06%)</title><rect x="45.5" y="309" width="0.6" height="15.0" fill="rgb(208,63,63)" rx="2" ry="2" />
+<text  x="48.45" y="319.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (4 samples, 0.23%)</title><rect x="1180.0" y="325" width="2.6" height="15.0" fill="rgb(217,74,74)" rx="2" ry="2" />
+<text  x="1182.97" y="335.5" ></text>
+</g>
+<g >
+<title>sys_futex (12 samples, 0.68%)</title><rect x="72.9" y="357" width="8.0" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="75.88" y="367.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="137.1" y="309" width="1.3" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="140.10" y="319.5" ></text>
+</g>
+<g >
+<title>futex_wait (8 samples, 0.45%)</title><rect x="256.8" y="325" width="5.4" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="259.84" y="335.5" ></text>
+</g>
+<g >
+<title>Lscala/collection/Iterator:::foreach (4 samples, 0.23%)</title><rect x="1154.5" y="405" width="2.7" height="15.0" fill="rgb(185,185,53)" rx="2" ry="2" />
+<text  x="1157.55" y="415.5" ></text>
+</g>
+<g >
+<title>futex_wait (16 samples, 0.91%)</title><rect x="171.9" y="325" width="10.7" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="174.88" y="335.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (8 samples, 0.45%)</title><rect x="256.8" y="229" width="5.4" height="15.0" fill="rgb(230,95,95)" rx="2" ry="2" />
+<text  x="259.84" y="239.5" ></text>
+</g>
+<g >
+<title>JVM_DoPrivileged (1 samples, 0.06%)</title><rect x="44.8" y="373" width="0.7" height="15.0" fill="rgb(200,51,51)" rx="2" ry="2" />
+<text  x="47.78" y="383.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (7 samples, 0.40%)</title><rect x="167.2" y="405" width="4.7" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text  x="170.20" y="415.5" ></text>
+</g>
+<g >
+<title>_new_array_Java (1 samples, 0.06%)</title><rect x="72.2" y="405" width="0.7" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="75.21" y="415.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (16 samples, 0.91%)</title><rect x="188.6" y="229" width="10.7" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="191.61" y="239.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="268.2" y="389" width="1.3" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="271.21" y="399.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (12 samples, 0.68%)</title><rect x="220.0" y="325" width="8.1" height="15.0" fill="rgb(240,109,109)" rx="2" ry="2" />
+<text  x="223.05" y="335.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (4 samples, 0.23%)</title><rect x="1173.3" y="261" width="2.7" height="15.0" fill="rgb(250,122,122)" rx="2" ry="2" />
+<text  x="1176.28" y="271.5" ></text>
+</g>
+<g >
+<title>Lrouting/ActiveRouter:::startTransfer (1 samples, 0.06%)</title><rect x="1141.2" y="405" width="0.6" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text  x="1144.17" y="415.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (16 samples, 0.91%)</title><rect x="171.9" y="309" width="10.7" height="15.0" fill="rgb(225,86,86)" rx="2" ry="2" />
+<text  x="174.88" y="319.5" ></text>
+</g>
+<g >
+<title>__vsnprintf_chk (1 samples, 0.06%)</title><rect x="262.2" y="421" width="0.7" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="265.19" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="255.5" y="389" width="0.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="258.50" y="399.5" ></text>
+</g>
+<g >
+<title>__indirect_thunk_start (1 samples, 0.06%)</title><rect x="125.7" y="197" width="0.7" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="128.73" y="207.5" ></text>
+</g>
+<g >
+<title>native_sched_clock (3 samples, 0.17%)</title><rect x="171.9" y="181" width="2.0" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="174.88" y="191.5" ></text>
+</g>
+<g >
+<title>Ljava/util/LinkedHashMap:::newNode (25 samples, 1.42%)</title><rect x="662.2" y="421" width="16.7" height="15.0" fill="rgb(67,215,67)" rx="2" ry="2" />
+<text  x="665.21" y="431.5" ></text>
+</g>
+<g >
+<title>JVM_DoPrivileged (1 samples, 0.06%)</title><rect x="20.7" y="389" width="0.7" height="15.0" fill="rgb(223,83,83)" rx="2" ry="2" />
+<text  x="23.70" y="399.5" ></text>
+</g>
+<g >
+<title>__GI___writev (1 samples, 0.06%)</title><rect x="90.3" y="389" width="0.6" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="93.27" y="399.5" ></text>
+</g>
+<g >
+<title>native_write_msr (14 samples, 0.79%)</title><rect x="208.0" y="181" width="9.4" height="15.0" fill="rgb(240,109,109)" rx="2" ry="2" />
+<text  x="211.00" y="191.5" ></text>
+</g>
+<g >
+<title>smp_apic_timer_interrupt (1 samples, 0.06%)</title><rect x="446.1" y="389" width="0.7" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text  x="449.15" y="399.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (5 samples, 0.28%)</title><rect x="84.9" y="357" width="3.4" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text  x="87.92" y="367.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (8 samples, 0.45%)</title><rect x="262.9" y="261" width="5.3" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="265.86" y="271.5" ></text>
+</g>
+<g >
+<title>futex_wait (16 samples, 0.91%)</title><rect x="229.4" y="341" width="10.7" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text  x="232.41" y="351.5" ></text>
+</g>
+<g >
+<title>sys_futex (1 samples, 0.06%)</title><rect x="171.2" y="309" width="0.7" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="174.21" y="319.5" ></text>
+</g>
+<g >
+<title>itable stub (2 samples, 0.11%)</title><rect x="1182.6" y="405" width="1.4" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="1185.64" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (9 samples, 0.51%)</title><rect x="182.6" y="373" width="6.0" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text  x="185.59" y="383.5" ></text>
+</g>
+<g >
+<title>remote_function (4 samples, 0.23%)</title><rect x="403.3" y="341" width="2.7" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="406.33" y="351.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (13 samples, 0.74%)</title><rect x="115.7" y="389" width="8.7" height="15.0" fill="rgb(246,117,117)" rx="2" ry="2" />
+<text  x="118.69" y="399.5" ></text>
+</g>
+<g >
+<title>exit_to_usermode_loop (4 samples, 0.23%)</title><rect x="1173.3" y="341" width="2.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="1176.28" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/security/AccessController:::getStackAccessControlContext (3 samples, 0.17%)</title><rect x="1084.3" y="389" width="2.0" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="1087.31" y="399.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/collect/AbstractIterator:::hasNext (73 samples, 4.14%)</title><rect x="689.0" y="405" width="48.8" height="15.0" fill="rgb(64,213,64)" rx="2" ry="2" />
+<text  x="691.97" y="415.5" >Lcom..</text>
+</g>
+<g >
+<title>Ljava/util/ArrayList:::toArray (1 samples, 0.06%)</title><rect x="23.4" y="421" width="0.6" height="15.0" fill="rgb(64,213,64)" rx="2" ry="2" />
+<text  x="26.38" y="431.5" ></text>
+</g>
+<g >
+<title>do_IRQ (1 samples, 0.06%)</title><rect x="527.8" y="389" width="0.6" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text  x="530.76" y="399.5" ></text>
+</g>
+<g >
+<title>swapgs_restore_regs_and_return_to_usermode (4 samples, 0.23%)</title><rect x="1173.3" y="373" width="2.7" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="1176.28" y="383.5" ></text>
+</g>
+<g >
+<title>Lscroll/internal/graph/ScalaRoleGraph:::filter (4 samples, 0.23%)</title><rect x="682.9" y="421" width="2.7" height="15.0" fill="rgb(180,180,51)" rx="2" ry="2" />
+<text  x="685.95" y="431.5" ></text>
+</g>
+<g >
+<title>do_IRQ (1 samples, 0.06%)</title><rect x="1119.1" y="373" width="0.7" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text  x="1122.09" y="383.5" ></text>
+</g>
+<g >
+<title>futex_wait (18 samples, 1.02%)</title><rect x="243.5" y="341" width="12.0" height="15.0" fill="rgb(217,76,76)" rx="2" ry="2" />
+<text  x="246.46" y="351.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (16 samples, 0.91%)</title><rect x="229.4" y="389" width="10.7" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text  x="232.41" y="399.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (12 samples, 0.68%)</title><rect x="220.0" y="277" width="8.1" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text  x="223.05" y="287.5" ></text>
+</g>
+<g >
+<title>schedule (18 samples, 1.02%)</title><rect x="139.1" y="293" width="12.0" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="142.10" y="303.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (12 samples, 0.68%)</title><rect x="220.0" y="213" width="8.1" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="223.05" y="223.5" ></text>
+</g>
+<g >
+<title>finish_task_switch (16 samples, 0.91%)</title><rect x="188.6" y="261" width="10.7" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="191.61" y="271.5" ></text>
+</g>
+<g >
+<title>start_thread (2 samples, 0.11%)</title><rect x="268.2" y="421" width="1.3" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text  x="271.21" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="101.6" y="389" width="1.4" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text  x="104.64" y="399.5" ></text>
+</g>
+<g >
+<title>do_futex (7 samples, 0.40%)</title><rect x="1184.0" y="341" width="4.7" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1186.98" y="351.5" ></text>
+</g>
+<g >
+<title>__remove_hrtimer (1 samples, 0.06%)</title><rect x="45.5" y="325" width="0.6" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="48.45" y="335.5" ></text>
+</g>
+<g >
+<title>timerqueue_del (1 samples, 0.06%)</title><rect x="123.7" y="277" width="0.7" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="126.72" y="287.5" ></text>
+</g>
+<g >
+<title>Lsun/font/GlyphList:::fillBounds (1 samples, 0.06%)</title><rect x="30.1" y="421" width="0.6" height="15.0" fill="rgb(56,206,56)" rx="2" ry="2" />
+<text  x="33.07" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="125.1" y="261" width="0.6" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="128.06" y="271.5" ></text>
+</g>
+<g >
+<title>vtable stub (1 samples, 0.06%)</title><rect x="80.9" y="405" width="0.7" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="83.91" y="415.5" ></text>
+</g>
+<g >
+<title>smp_thermal_interrupt (1 samples, 0.06%)</title><rect x="678.3" y="389" width="0.6" height="15.0" fill="rgb(220,80,80)" rx="2" ry="2" />
+<text  x="681.27" y="399.5" ></text>
+</g>
+<g >
+<title>__update_idle_core (1 samples, 0.06%)</title><rect x="217.4" y="245" width="0.6" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="220.37" y="255.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue_me (12 samples, 0.68%)</title><rect x="115.7" y="325" width="8.0" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="118.69" y="335.5" ></text>
+</g>
+<g >
+<title>event_function (4 samples, 0.23%)</title><rect x="403.3" y="325" width="2.7" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="406.33" y="335.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock_irqsave (1 samples, 0.06%)</title><rect x="649.5" y="293" width="0.7" height="15.0" fill="rgb(235,102,102)" rx="2" ry="2" />
+<text  x="652.50" y="303.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="101.6" y="341" width="1.4" height="15.0" fill="rgb(201,52,52)" rx="2" ry="2" />
+<text  x="104.64" y="351.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (12 samples, 0.68%)</title><rect x="220.0" y="261" width="8.1" height="15.0" fill="rgb(216,74,74)" rx="2" ry="2" />
+<text  x="223.05" y="271.5" ></text>
+</g>
+<g >
+<title>_new_instance_Java (3 samples, 0.17%)</title><rect x="1163.2" y="373" width="2.0" height="15.0" fill="rgb(229,92,92)" rx="2" ry="2" />
+<text  x="1166.24" y="383.5" ></text>
+</g>
+<g >
+<title>futex_wait (17 samples, 0.96%)</title><rect x="155.8" y="325" width="11.4" height="15.0" fill="rgb(223,83,83)" rx="2" ry="2" />
+<text  x="158.83" y="335.5" ></text>
+</g>
+<g >
+<title>Lcom/google/common/cache/LocalCache$LocalManualCache:::invalidate (1 samples, 0.06%)</title><rect x="270.2" y="421" width="0.7" height="15.0" fill="rgb(51,201,51)" rx="2" ry="2" />
+<text  x="273.22" y="431.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (1 samples, 0.06%)</title><rect x="242.1" y="181" width="0.7" height="15.0" fill="rgb(244,115,115)" rx="2" ry="2" />
+<text  x="245.12" y="191.5" ></text>
+</g>
+<g >
+<title>Ljavax/swing/event/EventListenerList:::getListeners (1 samples, 0.06%)</title><rect x="1140.5" y="405" width="0.7" height="15.0" fill="rgb(53,203,53)" rx="2" ry="2" />
+<text  x="1143.50" y="415.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (2 samples, 0.11%)</title><rect x="228.1" y="357" width="1.3" height="15.0" fill="rgb(216,73,73)" rx="2" ry="2" />
+<text  x="231.07" y="367.5" ></text>
+</g>
+<g >
+<title>native_sched_clock (1 samples, 0.06%)</title><rect x="207.3" y="181" width="0.7" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="210.34" y="191.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (7 samples, 0.40%)</title><rect x="151.1" y="389" width="4.7" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="154.15" y="399.5" ></text>
+</g>
+<g >
+<title>pthread_cond_timedwait@@GLIBC_2.3.2 (16 samples, 0.91%)</title><rect x="229.4" y="421" width="10.7" height="15.0" fill="rgb(211,66,66)" rx="2" ry="2" />
+<text  x="232.41" y="431.5" ></text>
+</g>
+<g >
+<title>getname (1 samples, 0.06%)</title><rect x="256.2" y="325" width="0.6" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="259.17" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (7 samples, 0.40%)</title><rect x="183.9" y="325" width="4.7" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text  x="186.92" y="335.5" ></text>
+</g>
+<g >
+<title>__intel_pmu_enable_all.constprop.23 (16 samples, 0.91%)</title><rect x="139.1" y="197" width="10.7" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="142.10" y="207.5" ></text>
+</g>
+<g >
+<title>sock_sendmsg (1 samples, 0.06%)</title><rect x="90.3" y="245" width="0.6" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="93.27" y="255.5" ></text>
+</g>
+</g>
+</svg>
